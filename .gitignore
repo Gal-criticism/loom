@@ -1,20 +1,53 @@
 # Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
 bin/
 dist/
+
+# Go
+vendor/
+*.test
+coverage.txt
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun.lockb
+
+# Build output
+dist/
+build/
+*.tgz
 
 # Environment
 .env
 .env.local
+.env.*.local
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
+Thumbs.db
 
 # Logs
 *.log
-node_modules/
-bun.lockb
-dist/
+
+# Test
+coverage.out
+coverage.html
+
+# Temporary
+tmp/
+temp/
