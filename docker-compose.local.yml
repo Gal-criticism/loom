@@ -1,0 +1,49 @@
+version: '3.8'
+
+# 本地测试方案 - Centrifugo 单独部署
+# 使用外部 Centrifugo 服务
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-loom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loom_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-loom}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-loom}:${POSTGRES_PASSWORD:-loom_dev}@postgres:5432/${POSTGRES_DB:-loom}
+      # 使用外部 Centrifugo
+      CENTRIFUGO_URL: ${CENTRIFUGO_URL:-ws://localhost:8000}
+      CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY}
+      CENTRIFUGO_TOKEN_SECRET: ${CENTRIFUGO_TOKEN_SECRET}
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      - postgres
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    ports:
+      - "${CLIENT_PORT:-8080}:8080"
+    environment:
+      VITE_API_URL: http://localhost:3000
+      VITE_WS_URL: ${CENTRIFUGO_URL:-ws://localhost:8000}
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

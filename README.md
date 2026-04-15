@@ -10,16 +10,23 @@ git clone https://github.com/Gal-criticism/loom.git
 cd loom
 ```
 
-### 2. 启动开发环境
+### 2. 选择部署方式
+
+#### 方式 A：完整部署（含 Centrifugo）
 ```bash
-# 一键启动（推荐）
-chmod +x scripts/dev.sh
-./scripts/dev.sh
+# 一键启动所有服务
+docker-compose up --build -d
 ```
 
-或手动启动：
+#### 方式 B：本地测试（外部 Centrifugo）
 ```bash
-docker-compose up --build -d
+# 1. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入你的外部 Centrifugo 地址和密钥
+
+# 2. 一键启动
+chmod +x scripts/local-dev.sh
+./scripts/local-dev.sh
 ```
 
 ### 3. 访问
@@ -27,7 +34,7 @@ docker-compose up --build -d
 |------|------|
 | Client | http://localhost:8080 |
 | Backend | http://localhost:3000 |
-| WebSocket | ws://localhost:8000 |
+| WebSocket | ws://localhost:8000 (或你配置的外部地址) |
 
 ---
 
@@ -35,23 +42,24 @@ docker-compose up --build -d
 
 ```
 loom/
-├── docker-compose.yml     # Docker 编排
-├── Dockerfile.backend     # Backend 镜像
-├── Dockerfile.client     # Client 镜像
-├── .env.example          # 环境变量模板
+├── docker-compose.yml          # 完整部署（含 Centrifugo）
+├── docker-compose.local.yml    # 本地测试（外部 Centrifugo）
+├── Dockerfile.backend          # Backend 镜像
+├── Dockerfile.client           # Client 镜像
+├── .env.example                # 环境变量模板
 ├── Makefile
 │
-├── cmd/daemon/           # Go CLI (用户本地运行)
-│   ├── api/              # HTTP API
-│   ├── cmd/              # CLI 命令
-│   ├── config/           # 配置管理
-│   ├── runtime/          # Runtime 适配器
-│   └── ws/               # WebSocket 客户端
+├── cmd/daemon/                 # Go CLI (用户本地运行)
+│   ├── api/                    # HTTP API
+│   ├── cmd/                    # CLI 命令
+│   ├── config/                 # 配置管理
+│   ├── runtime/                # Runtime 适配器
+│   └── ws/                     # WebSocket 客户端
 │
-├── backend/              # TanStack Start + Bun
+├── backend/                    # TanStack Start + Bun
 │   └── src/
 │
-└── client/               # React 前端
+└── client/                     # React 前端
     └── src/
 ```
 
@@ -60,24 +68,34 @@ loom/
 ## 本地开发
 
 ### 环境变量
+
+复制模板并配置：
 ```bash
-cp .env.example .env.local
-# 编辑 .env.local 配置
+cp .env.example .env
+# 编辑 .env
 ```
 
+**关键配置项：**
+| 变量 | 说明 |
+|------|------|
+| `CENTRIFUGO_URL` | WebSocket 服务器地址 |
+| `CENTRIFUGO_API_KEY` | Centrifugo API 密钥 |
+| `CENTRIFUGO_TOKEN_SECRET` | Centrifugo Token 密钥 |
+
 ### Docker 管理
+
+**完整部署（含 Centrifugo）：**
 ```bash
-# 启动
 docker-compose up -d
-
-# 停止
 docker-compose down
-
-# 查看日志
 docker-compose logs -f
+```
 
-# 查看状态
-docker-compose ps
+**本地测试（外部 Centrifugo）：**
+```bash
+docker-compose -f docker-compose.local.yml up -d
+docker-compose -f docker-compose.local.yml down
+docker-compose -f docker-compose.local.yml logs -f
 ```
 
 ### 端口分配
@@ -156,4 +174,11 @@ lsof -i :8080
 ### 数据库连接失败
 ```bash
 docker-compose logs postgres
+```
+
+### Centrifugo 连接失败
+检查 `.env` 中的 Centrifugo 配置是否正确：
+```bash
+# 测试 Centrifugo 是否可访问
+curl http://your-centrifugo-server:8000/health
 ```
