@@ -4,11 +4,11 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: loom
-      POSTGRES_PASSWORD: loom_dev
-      POSTGRES_DB: loom
+      POSTGRES_USER: ${POSTGRES_USER:-loom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loom_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-loom}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
@@ -16,9 +16,13 @@ services:
   centrigugo:
     image: centrifugo/centrifugo:v5
     ports:
-      - "8000:8000"
+      - "${CENTRIFUGO_PORT:-8000}:8000"
     volumes:
       - ./centrifugo_config.json:/etc/centrifugo/config.json
+    environment:
+      CENTRIFUGO_TOKEN_SECRET: ${CENTRIFUGO_TOKEN_SECRET}
+      CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY}
+      CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
     command: centrifugo -c /etc/centrifugo/config.json
 
   backend:
@@ -26,10 +30,14 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     ports:
-      - "3000:3000"
+      - "${APP_PORT:-3000}:3000"
     environment:
-      DATABASE_URL: postgresql://loom:loom_dev@postgres:5432/loom
+      DATABASE_URL: postgresql://${POSTGRES_USER:-loom}:${POSTGRES_PASSWORD:-loom_dev}@postgres:5432/${POSTGRES_DB:-loom}
       CENTRIFUGO_URL: ws://centrigugo:8000
+      CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY}
+      CENTRIFUGO_TOKEN_SECRET: ${CENTRIFUGO_TOKEN_SECRET}
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       - postgres
       - centrigugo
