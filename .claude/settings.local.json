@@ -10,7 +10,22 @@
       "Bash(git commit:*)",
       "Bash(git -C /Users/gaoxiaodong/projects/loom add -A)",
       "Bash(git -C /Users/gaoxiaodong/projects/loom commit -m \"chore: initial project structure with docker-compose\")",
-      "Bash(git -C /Users/gaoxiaodong/projects/loom commit -m \"chore: add docker-compose environment config\")"
+      "Bash(git -C /Users/gaoxiaodong/projects/loom commit -m \"chore: add docker-compose environment config\")",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom add migrations/001_initial_schema.sql)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom commit -m \"db: add initial PostgreSQL schema\")",
+      "Bash(go mod:*)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom add backend/)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom commit -m \"feat\\(backend\\): add TanStack Start project with auth and WS\")",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom add client/)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom commit -m \"feat\\(client\\): add TanStack Start frontend with layered UI, player and chat\")",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom log --oneline)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom remote add origin https://github.com/Gal-criticism/loom.git)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom branch -M main)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom push -u origin main)",
+      "Bash(bun install:*)",
+      "Bash(bun run:*)",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom commit -m \"fix: add missing go.mod and backend index.html\")",
+      "Bash(git -C /Users/gaoxiaodong/projects/loom push origin main)"
     ]
   }
 }
