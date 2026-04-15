@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Go 检查
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Download Go modules
+        run: cd cmd/daemon && go mod download
+
+      - name: Go Vet
+        run: cd cmd/daemon && go vet ./...
+
+      # Bun 检查
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Backend Install & Build
+        run: |
+          cd backend
+          bun install
+          bun run build
+
+      - name: Client Install & Build
+        run: |
+          cd client
+          bun install
+          bun run build
+
+      # 状态展示（GitHub Actions 自动显示每个 step 的 PASS/FAIL）
