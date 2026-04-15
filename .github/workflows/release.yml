@@ -36,6 +36,8 @@ jobs:
       - name: Extract metadata
         id: metadata
         run: |
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "REPO=$REPO" >> $GITHUB_OUTPUT
           echo "VERSION=${{ github.event.inputs.version || github.ref_name }}" >> $GITHUB_OUTPUT
 
       - name: Build and push Backend
@@ -44,9 +46,9 @@ jobs:
           context: ./backend
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/backend:${{ steps.metadata.outputs.VERSION }}
-            ghcr.io/${{ github.repository }}/backend:latest
-          cache-from: type=registry,ref=${{ github.repository }}/backend:latest
+            ghcr.io/${{ steps.metadata.outputs.REPO }}/backend:${{ steps.metadata.outputs.VERSION }}
+            ghcr.io/${{ steps.metadata.outputs.REPO }}/backend:latest
+          cache-from: type=registry,ref=${{ steps.metadata.outputs.REPO }}/backend:latest
           cache-to: type=inline
 
       - name: Build and push Client
@@ -55,14 +57,14 @@ jobs:
           context: ./client
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/client:${{ steps.metadata.outputs.VERSION }}
-            ghcr.io/${{ github.repository }}/client:latest
-          cache-from: type=registry,ref=${{ github.repository }}/client:latest
+            ghcr.io/${{ steps.metadata.outputs.REPO }}/client:${{ steps.metadata.outputs.VERSION }}
+            ghcr.io/${{ steps.metadata.outputs.REPO }}/client:latest
+          cache-from: type=registry,ref=${{ steps.metadata.outputs.REPO }}/client:latest
           cache-to: type=inline
 
-      - name: Build and push Centrifugo config
+      - name: Summary
         run: |
           echo "发布版本: ${{ steps.metadata.outputs.VERSION }}"
           echo "镜像地址:"
-          echo "  - ghcr.io/${{ github.repository }}/backend:${{ steps.metadata.outputs.VERSION }}"
-          echo "  - ghcr.io/${{ github.repository }}/client:${{ steps.metadata.outputs.VERSION }}"
+          echo "  - ghcr.io/${{ steps.metadata.outputs.REPO }}/backend:${{ steps.metadata.outputs.VERSION }}"
+          echo "  - ghcr.io/${{ steps.metadata.outputs.REPO }}/client:${{ steps.metadata.outputs.VERSION }}"
