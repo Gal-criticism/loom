@@ -1,0 +1,8 @@
+{
+  "token_secret": "dev-secret-change-in-production",
+  "api_key": "dev-api-key-change-in-production",
+  "admin_secret": "dev-admin-secret",
+  "port": "8000",
+  "engine": "memory",
+  "allowed_origins": ["http://localhost:3000", "http://localhost:8080"]
+}
