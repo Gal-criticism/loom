@@ -1,71 +1,80 @@
-# Loom Project Guide
+# CLAUDE.md
 
-## 项目概述
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Loom 是一个具有"氛围感"的虚拟陪伴产品，通过本地 AI Runtime（Claude Code、OpenCode）提供 AI 对话能力。
+## Project Overview
 
-## 技术栈
+Loom is an AI companion product with "vibe" - provides AI chat using local Runtime (Claude Code, OpenCode).
 
-| 组件 | 技术 |
-|------|------|
+## Architecture
+
+```
+User Machine                    Cloud
+┌─────────────┐                ┌─────────────────┐
+│   Runtime   │◀── SDK ───────▶│    Daemon      │
+│ Claude Code │                │  (Go CLI)       │
+│  OpenCode   │                └────────┬────────┘
+└─────────────┘                         │ WebSocket
+                                        ▼
+┌─────────────┐                ┌─────────────────┐
+│    Client   │◀───────────────▶│    Backend     │
+│  (React)    │   HTTP + WS    │  (Bun + TS)     │
+└─────────────┘                └────────┬────────┘
+                                        ▼
+                                 ┌─────────────┐
+                                 │ Centrifugo  │
+                                 │  (WS)       │
+                                 └─────────────┘
+```
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
 | Client | React + TanStack Start + TanStack Query |
 | Backend | TanStack Start + Bun |
 | Daemon | Go CLI |
 | Database | PostgreSQL |
 | WebSocket | Centrifugo |
 
-## 项目结构
-
-```
-loom/
-├── cmd/daemon/        # Go CLI (用户本地运行)
-├── backend/          # TanStack Start + Bun API
-├── client/           # React 前端
-├── docker-compose.yml
-├── Dockerfile.backend
-├── Dockerfile.client
-└── .github/workflows/
-```
-
-## 开发规范
-
-### Git 工作流
-- 功能开发使用分支
-- 提交信息遵循 conventional commits
-- 推送前确保 CI 通过
-
-### 代码规范
-- **Go**: 使用 `go vet` 检查
-- **TypeScript/React**: 使用 Bun 构建验证
-
-### 环境变量
-- 开发使用 `.env.local`（已忽略）
-- 生产使用 `.env`
-- 模板见 `.env.example`
-
-### Docker
-- 生产部署使用 docker-compose
-- 镜像推送到 GHCR
-
-## 常用命令
+## Common Commands
 
 ```bash
-# 本地开发
+# Start all services locally
 docker-compose up --build -d
 
-# 构建 Daemon
+# Build Daemon (requires Go)
 cd cmd/daemon && go build -o loomd .
 
-# 构建镜像
+# Build and push Docker images
 docker build -t ghcr.io/gal-criticism/loom/backend:latest ./backend
 docker build -t ghcr.io/gal-criticism/loom/client:latest ./client
+
+# Lint
+cd cmd/daemon && go vet ./...
+cd backend && bun run build
+cd client && bun run build
 ```
 
-## 快速参考
+## Key Files
 
-| 服务 | 端口 |
-|------|------|
-| Client | 8080 |
-| Backend | 3000 |
+- `docker-compose.yml` - All services orchestration
+- `Dockerfile.backend` / `Dockerfile.client` - Container definitions
+- `cmd/daemon/` - Go CLI that runs on user's machine
+- `backend/` - TanStack Start API server
+- `client/` - React frontend
+
+## Environment
+
+- Development: `.env.local` (gitignored)
+- Production: `.env`
+- Template: `.env.example`
+
+## Ports
+
+| Service | Port |
+|---------|------|
+| Client UI | 8080 |
+| Backend API | 3000 |
 | PostgreSQL | 5432 |
-| Centrifugo | 8000 |
+| Centrifugo WS | 8000 |
