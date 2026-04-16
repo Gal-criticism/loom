@@ -51,3 +51,4 @@ coverage.html
 # Temporary
 tmp/
 temp/
+.worktrees/
