@@ -10,6 +10,10 @@ import {
   deleteSessionRoute,
 } from "./routes/api/sessions/[id]";
 import { deviceAuthRoute } from "./routes/api/auth/device";
+import {
+  listMessagesRoute,
+  sendMessageRoute,
+} from "./routes/api/messages/index";
 
 declare module "@tanstack/start" {
   interface FileRoutesByPath {
@@ -30,4 +34,7 @@ export const routeTree = rootRoute.addChildren([
   getSessionRoute,
   updateSessionRoute,
   deleteSessionRoute,
+  // Message routes
+  listMessagesRoute,
+  sendMessageRoute,
 ]);
