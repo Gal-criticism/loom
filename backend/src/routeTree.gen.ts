@@ -1,5 +1,15 @@
 import { Route as rootRoute } from "./routes/__root";
 import { Route as indexRoute } from "./routes/index";
+import {
+  listSessionsRoute,
+  createSessionRoute,
+} from "./routes/api/sessions/index";
+import {
+  getSessionRoute,
+  updateSessionRoute,
+  deleteSessionRoute,
+} from "./routes/api/sessions/[id]";
+import { deviceAuthRoute } from "./routes/api/auth/device";
 
 declare module "@tanstack/start" {
   interface FileRoutesByPath {
@@ -10,4 +20,14 @@ declare module "@tanstack/start" {
   }
 }
 
-export const routeTree = rootRoute.addChildren([indexRoute]);
+export const routeTree = rootRoute.addChildren([
+  indexRoute,
+  // Auth routes
+  deviceAuthRoute,
+  // Session routes
+  listSessionsRoute,
+  createSessionRoute,
+  getSessionRoute,
+  updateSessionRoute,
+  deleteSessionRoute,
+]);
