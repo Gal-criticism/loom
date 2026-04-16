@@ -1,9 +1,10 @@
 import { Route, json } from "@tanstack/start";
 import { db } from "~/lib/db";
 import { getCurrentUser } from "~/lib/auth";
-import { createWSServer } from "~/lib/ws";
+import { getWSServer } from "~/lib/ws";
+import { formatUserMessage } from "~/lib/messageHandler";
 
-const ws = createWSServer();
+const ws = getWSServer();
 
 // GET /api/messages?session_id=xxx - List messages for a session with pagination
 export const listMessagesRoute = new Route({
@@ -133,14 +134,8 @@ export const sendMessageRoute = new Route({
 
     // Send to Daemon via WebSocket
     try {
-      ws.sendToDaemon(user.device_id, {
-        type: "chat:message",
-        data: {
-          session_id,
-          message_id: message.id,
-          content: message.content,
-        },
-      });
+      const daemonMessage = formatUserMessage(session_id, message.id, message.content);
+      ws.sendToDaemon(user.device_id, daemonMessage);
     } catch (error) {
       console.error("Failed to send message to daemon:", error);
       // Don't fail the request if WebSocket fails - message is already saved
