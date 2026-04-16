@@ -35,7 +35,7 @@ export interface WSServer {
   broadcastToSession(sessionId: string, message: ClientMessage): void;
 
   // Daemon communication
-  sendToDaemon(deviceId: string, message: Record<string, unknown>): void;
+  sendToDaemon(deviceId: string, message: Record<string, unknown>): Promise<void>;
 
   // Lifecycle
   connect(): Promise<void>;
@@ -49,6 +49,7 @@ class WSServerImpl implements WSServer {
   private maxReconnectAttempts = 10;
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 30000; // Max 30 seconds
+  private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // Client connections: Map<WebSocket, ClientConnection>
   private clientConnections = new Map<WebSocket, ClientConnection>();
@@ -61,6 +62,9 @@ class WSServerImpl implements WSServer {
 
   // Active subscriptions to user channels from Daemon: Map<deviceId, SubscriptionMeta>
   private daemonSubscriptions = new Map<string, SubscriptionMeta>();
+
+  // Pending subscription promises to prevent race conditions: Map<deviceId, Promise<void>>
+  private pendingSubscriptions = new Map<string, Promise<void>>();
 
   // Centrifugo configuration
   private centrifugoUrl: string;
@@ -99,6 +103,7 @@ class WSServerImpl implements WSServer {
       });
       // Always attempt to reconnect on disconnect
       this.state = ConnectionState.RECONNECTING;
+      this.scheduleReconnect();
     });
 
     // Error handling
@@ -155,6 +160,12 @@ class WSServerImpl implements WSServer {
   }
 
   disconnect(): void {
+    // Clear any pending reconnect
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId);
+      this.reconnectTimeoutId = null;
+    }
+
     this.centrifuge.disconnect();
     this.state = ConnectionState.DISCONNECTED;
 
@@ -167,16 +178,79 @@ class WSServerImpl implements WSServer {
       }
     }
     this.daemonSubscriptions.clear();
+    this.pendingSubscriptions.clear();
+  }
+
+  /**
+   * Schedule a reconnection attempt with exponential backoff
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnectTimeoutId) {
+      return; // Already scheduled
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error("[WebSocket] Max reconnection attempts reached, giving up");
+      this.state = ConnectionState.DISCONNECTED;
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
+      this.maxReconnectDelay
+    );
+
+    console.log(`[WebSocket] Scheduling reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms`);
+
+    this.reconnectTimeoutId = setTimeout(() => {
+      this.reconnectTimeoutId = null;
+      if (this.state === ConnectionState.RECONNECTING) {
+        console.log("[WebSocket] Attempting to reconnect...");
+        this.centrifuge.connect();
+      }
+    }, delay);
   }
 
   /**
    * Subscribe to user:${deviceId} channel to receive messages from Daemon
+   * Uses promise-based locking to prevent race conditions
    */
   private async subscribeToUserChannel(
     deviceId: string,
     userId: string
   ): Promise<void> {
     // Check if already subscribed
+    if (this.daemonSubscriptions.has(deviceId)) {
+      return;
+    }
+
+    // Check if there's a pending subscription to prevent race conditions
+    const pending = this.pendingSubscriptions.get(deviceId);
+    if (pending) {
+      return pending;
+    }
+
+    // Create the subscription promise
+    const subscriptionPromise = this.doSubscribeToUserChannel(deviceId, userId);
+    this.pendingSubscriptions.set(deviceId, subscriptionPromise);
+
+    try {
+      await subscriptionPromise;
+    } finally {
+      // Clean up pending subscription
+      this.pendingSubscriptions.delete(deviceId);
+    }
+  }
+
+  /**
+   * Actual subscription implementation
+   */
+  private async doSubscribeToUserChannel(
+    deviceId: string,
+    userId: string
+  ): Promise<void> {
+    // Double-check after acquiring lock
     if (this.daemonSubscriptions.has(deviceId)) {
       return;
     }
@@ -244,6 +318,10 @@ class WSServerImpl implements WSServer {
     // Subscribe to user channel to receive Daemon messages
     this.subscribeToUserChannel(deviceId, userId).catch((error) => {
       console.error(`[WebSocket] Failed to subscribe to user channel for ${deviceId}:`, error);
+      // Disconnect client to prevent memory leak and stale connections
+      console.log(`[WebSocket] Disconnecting client ${deviceId} due to subscription failure`);
+      ws.close(1011, "Subscription failed");
+      this.removeConnection(ws);
     });
 
     // Handle client disconnect
@@ -332,13 +410,14 @@ class WSServerImpl implements WSServer {
     // For now, broadcast to all users and let clients filter
     // In a production system, we'd track which sessions each client is viewing
     console.log(`[WebSocket] Session broadcast not fully implemented, using user broadcast`);
+    throw new Error("NotImplementedError: broadcastToSession is not yet implemented");
   }
 
   /**
    * Send message to Daemon via Centrifugo
    * Publishes to daemon:${deviceId} channel
    */
-  sendToDaemon(deviceId: string, message: Record<string, unknown>): void {
+  async sendToDaemon(deviceId: string, message: Record<string, unknown>): Promise<void> {
     const channel = `daemon:${deviceId}`;
 
     if (this.state !== ConnectionState.CONNECTED) {
@@ -348,10 +427,12 @@ class WSServerImpl implements WSServer {
 
     console.log(`[WebSocket] Sending message to Daemon on ${channel}:`, message);
 
-    this.centrifuge.publish(channel, message).catch((error) => {
+    try {
+      await this.centrifuge.publish(channel, message);
+    } catch (error) {
       console.error(`[WebSocket] Failed to publish to ${channel}:`, error);
       throw error;
-    });
+    }
   }
 }
 
