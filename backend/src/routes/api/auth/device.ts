@@ -1,5 +1,5 @@
 import { Route, json } from "@tanstack/start";
-import { db } from "~/lib/db";
+import { db } from "~/lib/prisma";
 import { v4 as uuidv4 } from "uuid";
 
 export const deviceAuthRoute = new Route({
@@ -9,39 +9,45 @@ export const deviceAuthRoute = new Route({
     const { device_id } = await req.json();
 
     if (!device_id) {
-      // 生成新设备 ID
+      // Generate new device ID
       const newDeviceId = uuidv4();
 
-      const result = await db.query(
-        "INSERT INTO users (device_id) VALUES ($1) RETURNING id, device_id",
-        [newDeviceId]
-      );
+      const user = await db.user.create({
+        data: {
+          deviceId: newDeviceId,
+        },
+      });
 
       return json({
-        user: result.rows[0],
-        is_new: true
+        user: {
+          id: user.id,
+          device_id: user.deviceId,
+        },
+        is_new: true,
       });
     }
 
-    // 查找现有用户
-    const result = await db.query(
-      "SELECT id, device_id FROM users WHERE device_id = $1",
-      [device_id]
-    );
+    // Find existing user
+    let user = await db.user.findUnique({
+      where: { deviceId: device_id },
+    });
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return json({ error: "Device not found" }, { status: 404 });
     }
 
-    // 更新最后登录时间
-    await db.query(
-      "UPDATE users SET last_login = NOW() WHERE device_id = $1",
-      [device_id]
-    );
+    // Update last login time
+    user = await db.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
 
     return json({
-      user: result.rows[0],
-      is_new: false
+      user: {
+        id: user.id,
+        device_id: user.deviceId,
+      },
+      is_new: false,
     });
   },
 });

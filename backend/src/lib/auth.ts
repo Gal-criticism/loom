@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { db } from "./prisma";
 
 export async function getCurrentUser(req: Request) {
   const deviceId = req.headers.get("x-device-id");
@@ -7,10 +7,9 @@ export async function getCurrentUser(req: Request) {
     return null;
   }
 
-  const result = await db.query(
-    "SELECT id, device_id FROM users WHERE device_id = $1",
-    [deviceId]
-  );
+  const user = await db.user.findUnique({
+    where: { deviceId },
+  });
 
-  return result.rows[0] || null;
+  return user || null;
 }

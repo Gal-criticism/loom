@@ -1,7 +1,6 @@
 import { Route, json } from "@tanstack/start";
-import { db } from "~/lib/db";
+import { db } from "~/lib/prisma";
 import { getCurrentUser } from "~/lib/auth";
-import { v4 as uuidv4 } from "uuid";
 
 // GET /api/sessions - List all sessions for current user
 export const listSessionsRoute = new Route({
@@ -14,17 +13,32 @@ export const listSessionsRoute = new Route({
       return json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const result = await db.query(
-      `SELECT s.id, s.user_id, s.character_id, s.title, s.created_at, s.updated_at,
-              c.name as character_name, c.avatar_url as character_avatar
-       FROM sessions s
-       LEFT JOIN characters c ON s.character_id = c.id
-       WHERE s.user_id = $1
-       ORDER BY s.updated_at DESC`,
-      [user.id]
-    );
+    const sessions = await db.session.findMany({
+      where: { userId: user.id },
+      include: {
+        character: {
+          select: {
+            name: true,
+            avatarUrl: true,
+          },
+        },
+      },
+      orderBy: { updatedAt: "desc" },
+    });
 
-    return json({ sessions: result.rows });
+    // Transform to match expected response format
+    const transformedSessions = sessions.map((session) => ({
+      id: session.id,
+      user_id: session.userId,
+      character_id: session.characterId,
+      title: session.title,
+      created_at: session.createdAt,
+      updated_at: session.updatedAt,
+      character_name: session.character?.name,
+      character_avatar: session.character?.avatarUrl,
+    }));
+
+    return json({ sessions: transformedSessions });
   },
 });
 
@@ -42,33 +56,46 @@ export const createSessionRoute = new Route({
     const { title, character_id } = await req.json();
 
     // Validate title
-    if (title !== undefined && (typeof title !== 'string' || title.length > 255)) {
+    if (title !== undefined && (typeof title !== "string" || title.length > 255)) {
       return json({ error: "Invalid title" }, { status: 400 });
     }
 
     // Validate character_id if provided
-    if (character_id !== undefined) {
-      if (typeof character_id !== 'number') {
+    if (character_id !== undefined && character_id !== null) {
+      if (typeof character_id !== "string") {
         return json({ error: "Invalid character_id" }, { status: 400 });
       }
 
-      const charResult = await db.query(
-        "SELECT id FROM characters WHERE id = $1 AND (user_id = $2 OR user_id IS NULL)",
-        [character_id, user.id]
-      );
+      const character = await db.character.findFirst({
+        where: {
+          id: character_id,
+          OR: [{ userId: user.id }, { userId: null }],
+        },
+      });
 
-      if (charResult.rows.length === 0) {
+      if (!character) {
         return json({ error: "Character not found" }, { status: 404 });
       }
     }
 
-    const result = await db.query(
-      `INSERT INTO sessions (user_id, character_id, title)
-       VALUES ($1, $2, $3)
-       RETURNING id, user_id, character_id, title, created_at, updated_at`,
-      [user.id, character_id || null, title || null]
-    );
+    const session = await db.session.create({
+      data: {
+        userId: user.id,
+        characterId: character_id || null,
+        title: title || null,
+      },
+    });
 
-    return json({ session: result.rows[0] }, { status: 201 });
+    // Transform to match expected response format
+    const transformedSession = {
+      id: session.id,
+      user_id: session.userId,
+      character_id: session.characterId,
+      title: session.title,
+      created_at: session.createdAt,
+      updated_at: session.updatedAt,
+    };
+
+    return json({ session: transformedSession }, { status: 201 });
   },
 });

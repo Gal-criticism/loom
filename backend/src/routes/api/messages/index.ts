@@ -1,5 +1,5 @@
 import { Route, json } from "@tanstack/start";
-import { db } from "~/lib/db";
+import { db } from "~/lib/prisma";
 import { getCurrentUser } from "~/lib/auth";
 import { getWSServer } from "~/lib/ws";
 import { formatUserMessage } from "~/lib/messageHandler";
@@ -25,12 +25,14 @@ export const listMessagesRoute = new Route({
     }
 
     // Validate session belongs to user
-    const sessionResult = await db.query(
-      "SELECT id FROM sessions WHERE id = $1 AND user_id = $2",
-      [sessionId, user.id]
-    );
+    const session = await db.session.findFirst({
+      where: {
+        id: sessionId,
+        userId: user.id,
+      },
+    });
 
-    if (sessionResult.rows.length === 0) {
+    if (!session) {
       return json({ error: "Session not found" }, { status: 404 });
     }
 
@@ -47,30 +49,35 @@ export const listMessagesRoute = new Route({
       return json({ error: "Invalid offset parameter" }, { status: 400 });
     }
 
-    const result = await db.query(
-      `SELECT id, session_id, role, content, tools, created_at
-       FROM messages
-       WHERE session_id = $1
-       ORDER BY created_at ASC
-       LIMIT $2 OFFSET $3`,
-      [sessionId, limit, offset]
-    );
+    const messages = await db.message.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: "asc" },
+      take: limit,
+      skip: offset,
+    });
 
     // Get total count for pagination metadata
-    const countResult = await db.query(
-      "SELECT COUNT(*) as total FROM messages WHERE session_id = $1",
-      [sessionId]
-    );
+    const total = await db.message.count({
+      where: { sessionId },
+    });
 
-    const total = parseInt(countResult.rows[0].total, 10);
+    // Transform to match expected response format
+    const transformedMessages = messages.map((message) => ({
+      id: message.id,
+      session_id: message.sessionId,
+      role: message.role,
+      content: message.content,
+      tools: message.tools,
+      created_at: message.createdAt,
+    }));
 
     return json({
-      messages: result.rows,
+      messages: transformedMessages,
       pagination: {
         total,
         limit,
         offset,
-        has_more: offset + result.rows.length < total,
+        has_more: offset + messages.length < total,
       },
     });
   },
@@ -113,24 +120,35 @@ export const sendMessageRoute = new Route({
     }
 
     // Validate session belongs to user
-    const sessionResult = await db.query(
-      "SELECT id FROM sessions WHERE id = $1 AND user_id = $2",
-      [session_id, user.id]
-    );
+    const session = await db.session.findFirst({
+      where: {
+        id: session_id,
+        userId: user.id,
+      },
+    });
 
-    if (sessionResult.rows.length === 0) {
+    if (!session) {
       return json({ error: "Session not found" }, { status: 404 });
     }
 
     // Save user message
-    const messageResult = await db.query(
-      `INSERT INTO messages (session_id, role, content)
-       VALUES ($1, 'user', $2)
-       RETURNING id, session_id, role, content, tools, created_at`,
-      [session_id, content.trim()]
-    );
+    const message = await db.message.create({
+      data: {
+        sessionId: session_id,
+        role: "user",
+        content: content.trim(),
+      },
+    });
 
-    const message = messageResult.rows[0];
+    // Transform to match expected response format
+    const transformedMessage = {
+      id: message.id,
+      session_id: message.sessionId,
+      role: message.role,
+      content: message.content,
+      tools: message.tools,
+      created_at: message.createdAt,
+    };
 
     // Send to Daemon via WebSocket
     try {
@@ -141,6 +159,6 @@ export const sendMessageRoute = new Route({
       // Don't fail the request if WebSocket fails - message is already saved
     }
 
-    return json({ message }, { status: 201 });
+    return json({ message: transformedMessage }, { status: 201 });
   },
 });
