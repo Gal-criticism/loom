@@ -1,22 +1,15 @@
 package main
 
 import (
-    "log"
-    "os"
+	"log"
+	"os"
 
-    "github.com/loom/daemon/cmd"
-    "github.com/loom/daemon/config"
+	"github.com/loom/daemon/cmd"
 )
 
 func main() {
-    cfg, err := config.Load("config.yaml")
-    if err != nil {
-        log.Fatalf("Failed to load config: %v", err)
-    }
-
-    if err := cmd.Root.Execute(); err != nil {
-        os.Exit(1)
-    }
-
-    _ = cfg
+	if err := cmd.Execute(); err != nil {
+		log.Printf("Error: %v", err)
+		os.Exit(1)
+	}
 }

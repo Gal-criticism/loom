@@ -3,6 +3,7 @@ import { BackgroundLayer } from "./BackgroundLayer";
 import { CharacterLayer } from "./CharacterLayer";
 import { ChatLayer } from "./ChatLayer";
 import { ControlLayer } from "./ControlLayer";
+import { ConnectionStatus } from "./ConnectionStatus";
 
 interface LayoutProps {
   children?: ReactNode;
@@ -11,6 +12,9 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden" }}>
+      {/* Layer 0: 连接状态指示器 */}
+      <ConnectionStatus />
+
       {/* Layer 1: 背景 */}
       <BackgroundLayer />
 

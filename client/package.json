@@ -9,6 +9,7 @@
   "dependencies": {
     "@tanstack/start": "^1.0.0",
     "@tanstack/react-query": "^5.0.0",
+    "centrifuge": "^5.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
