@@ -3,7 +3,7 @@ import { getRouter } from "./router";
 import { initWSServer } from "./lib/ws";
 import { logger } from "./lib/logger";
 import { config } from "./lib/config";
-import { startRateLimitCleanup } from "./lib/ratelimit";
+// NOTE: Rate limiting disabled - can be re-enabled by importing from "./lib/ratelimit"
 import { startHealthMonitoring } from "./lib/health";
 
 // Initialize WebSocket server on startup
@@ -13,7 +13,7 @@ initWSServer().catch((error) => {
 });
 
 // Start production-grade services
-startRateLimitCleanup();
+// NOTE: startRateLimitCleanup() disabled
 startHealthMonitoring();
 
 logger.info({
@@ -21,7 +21,7 @@ logger.info({
   env: config.app.env,
   logLevel: config.app.logLevel,
   features: {
-    rateLimiting: true,
+    rateLimiting: false, // Disabled
     healthMonitoring: true,
     messageValidation: true,
     transactionSupport: true,

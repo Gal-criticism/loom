@@ -8,8 +8,9 @@ import { jsonSuccess, jsonError } from "~/lib/response";
 import { withErrorHandler } from "~/middleware/errorHandler";
 import { logger } from "~/lib/logger";
 import { createMessageSchema, paginationSchema } from "~/lib/schemas";
-import { checkRateLimit, rateLimitConfigs, getRateLimitHeaders } from "~/lib/ratelimit";
 import { z } from "zod";
+
+// NOTE: Rate limiting disabled for now - can be re-enabled via lib/ratelimit.ts
 
 const ws = getWSServer();
 
@@ -23,17 +24,6 @@ export const listMessagesRoute = new Route({
 
       if (!user) {
         return jsonError(Errors.UNAUTHORIZED);
-      }
-
-      // Rate limiting
-      const rateLimit = checkRateLimit(`list_messages:${user.id}`, rateLimitConfigs.read);
-      if (!rateLimit.allowed) {
-        return jsonError(
-          Errors.RATE_LIMITED.withDetails({
-            retry_after: rateLimit.retryAfter,
-          }),
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
       }
 
       const url = new URL(req.url);
@@ -107,8 +97,7 @@ export const listMessagesRoute = new Route({
             offset,
             has_more: offset + messages.length < total,
           },
-        },
-        { headers: getRateLimitHeaders(rateLimit) }
+        }
       );
     });
   },
@@ -124,18 +113,6 @@ export const sendMessageRoute = new Route({
 
       if (!user) {
         return jsonError(Errors.UNAUTHORIZED);
-      }
-
-      // Strict rate limiting for message creation
-      const rateLimit = checkRateLimit(`send_message:${user.id}`, rateLimitConfigs.messageCreate);
-      if (!rateLimit.allowed) {
-        return jsonError(
-          Errors.RATE_LIMITED.withDetails({
-            retry_after: rateLimit.retryAfter,
-            message: `Rate limit exceeded. Try again in ${rateLimit.retryAfter} seconds.`,
-          }),
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
       }
 
       // Parse and validate body
@@ -221,7 +198,7 @@ export const sendMessageRoute = new Route({
       return jsonSuccess(
         { message: transformedMessage },
         undefined,
-        { status: 201, headers: getRateLimitHeaders(rateLimit) }
+        { status: 201 }
       );
     });
   },

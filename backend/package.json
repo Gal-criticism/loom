@@ -5,7 +5,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "start": "vinxi start"
+    "start": "vinxi start",
+    "test": "bun test src/tests/",
+    "test:watch": "bun test src/tests/ --watch",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:seed": "prisma db seed"
   },
   "dependencies": {
     "@prisma/client": "6",

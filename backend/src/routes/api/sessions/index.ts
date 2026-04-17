@@ -5,9 +5,9 @@ import { Errors } from "~/lib/errors";
 import { jsonSuccess, jsonError } from "~/lib/response";
 import { withErrorHandler } from "~/middleware/errorHandler";
 import { createSessionSchema } from "~/lib/schemas";
-import { checkRateLimit, rateLimitConfigs, getRateLimitHeaders } from "~/lib/ratelimit";
 import { logger } from "~/lib/logger";
-import { z } from "zod";
+
+// NOTE: Rate limiting disabled for now - can be re-enabled via lib/ratelimit.ts
 
 // GET /api/sessions - List all sessions for current user
 export const listSessionsRoute = new Route({
@@ -19,15 +19,6 @@ export const listSessionsRoute = new Route({
 
       if (!user) {
         return jsonError(Errors.UNAUTHORIZED);
-      }
-
-      // Rate limiting
-      const rateLimit = checkRateLimit(`list_sessions:${user.id}`, rateLimitConfigs.read);
-      if (!rateLimit.allowed) {
-        return jsonError(
-          Errors.RATE_LIMITED.withDetails({ retry_after: rateLimit.retryAfter }),
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
       }
 
       const sessions = await db.session.findMany({
@@ -59,11 +50,7 @@ export const listSessionsRoute = new Route({
         message_count: session._count.messages,
       }));
 
-      return jsonSuccess(
-        { sessions: transformedSessions },
-        undefined,
-        { headers: getRateLimitHeaders(rateLimit) }
-      );
+      return jsonSuccess({ sessions: transformedSessions });
     });
   },
 });
@@ -78,15 +65,6 @@ export const createSessionRoute = new Route({
 
       if (!user) {
         return jsonError(Errors.UNAUTHORIZED);
-      }
-
-      // Rate limiting
-      const rateLimit = checkRateLimit(`create_session:${user.id}`, rateLimitConfigs.session);
-      if (!rateLimit.allowed) {
-        return jsonError(
-          Errors.RATE_LIMITED.withDetails({ retry_after: rateLimit.retryAfter }),
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
       }
 
       // Parse and validate body
@@ -147,7 +125,7 @@ export const createSessionRoute = new Route({
       return jsonSuccess(
         { session: transformedSession },
         undefined,
-        { status: 201, headers: getRateLimitHeaders(rateLimit) }
+        { status: 201 }
       );
     });
   },

@@ -5,9 +5,9 @@ import { Errors } from "~/lib/errors";
 import { jsonSuccess, jsonError } from "~/lib/response";
 import { withErrorHandler } from "~/middleware/errorHandler";
 import { createSessionSchema, uuidParamSchema } from "~/lib/schemas";
-import { checkRateLimit, rateLimitConfigs, getRateLimitHeaders } from "~/lib/ratelimit";
 import { logger } from "~/lib/logger";
-import { z } from "zod";
+
+// NOTE: Rate limiting disabled for now - can be re-enabled via lib/ratelimit.ts
 
 // GET /api/sessions/:id - Get single session details
 export const getSessionRoute = new Route({
@@ -19,15 +19,6 @@ export const getSessionRoute = new Route({
 
       if (!user) {
         return jsonError(Errors.UNAUTHORIZED);
-      }
-
-      // Rate limiting
-      const rateLimit = checkRateLimit(`get_session:${user.id}`, rateLimitConfigs.read);
-      if (!rateLimit.allowed) {
-        return jsonError(
-          Errors.RATE_LIMITED.withDetails({ retry_after: rateLimit.retryAfter }),
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
       }
 
       // Validate UUID
@@ -73,11 +64,7 @@ export const getSessionRoute = new Route({
         message_count: session._count.messages,
       };
 
-      return jsonSuccess(
-        { session: transformedSession },
-        undefined,
-        { headers: getRateLimitHeaders(rateLimit) }
-      );
+      return jsonSuccess({ session: transformedSession });
     });
   },
 });
@@ -92,15 +79,6 @@ export const updateSessionRoute = new Route({
 
       if (!user) {
         return jsonError(Errors.UNAUTHORIZED);
-      }
-
-      // Rate limiting
-      const rateLimit = checkRateLimit(`update_session:${user.id}`, rateLimitConfigs.session);
-      if (!rateLimit.allowed) {
-        return jsonError(
-          Errors.RATE_LIMITED.withDetails({ retry_after: rateLimit.retryAfter }),
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
       }
 
       // Validate UUID
@@ -185,11 +163,7 @@ export const updateSessionRoute = new Route({
           updated_at: session.updatedAt,
         };
 
-        return jsonSuccess(
-          { session: transformedSession },
-          undefined,
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
+        return jsonSuccess({ session: transformedSession });
       } catch (error) {
         if (error instanceof Error && error.message === "SESSION_NOT_FOUND") {
           return jsonError(Errors.SESSION_NOT_FOUND);
@@ -210,15 +184,6 @@ export const deleteSessionRoute = new Route({
 
       if (!user) {
         return jsonError(Errors.UNAUTHORIZED);
-      }
-
-      // Rate limiting
-      const rateLimit = checkRateLimit(`delete_session:${user.id}`, rateLimitConfigs.session);
-      if (!rateLimit.allowed) {
-        return jsonError(
-          Errors.RATE_LIMITED.withDetails({ retry_after: rateLimit.retryAfter }),
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
       }
 
       // Validate UUID
@@ -257,11 +222,8 @@ export const deleteSessionRoute = new Route({
           userId: user.id,
         }, "Session deleted");
 
-        return jsonSuccess(
-          { success: true },
-          undefined,
-          { headers: getRateLimitHeaders(rateLimit) }
-        );
+        return jsonSuccess({ success: true });
+      } catch (error) {
       } catch (error) {
         if (error instanceof Error && error.message === "SESSION_NOT_FOUND") {
           return jsonError(Errors.SESSION_NOT_FOUND);
