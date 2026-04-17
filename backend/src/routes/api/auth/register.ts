@@ -1,11 +1,20 @@
-import { Route, json } from "@tanstack/start";
+import { Route } from "@tanstack/start";
 import { db } from "~/lib/db";
+import { withErrorHandler } from "~/middleware/errorHandler";
+import { jsonSuccess, jsonError } from "~/lib/response";
+import { Errors, APIError } from "~/lib/errors";
 
 export const registerRoute = new Route({
   path: "/api/auth/register",
   method: "POST",
-  handler: async (req: Request) => {
-    const { email, password } = await req.json();
+  handler: withErrorHandler(async ({ request }) => {
+    const { email, password } = await request.json();
+
+    if (!email || !password) {
+      return jsonError(Errors.INVALID_INPUT.withDetails({
+        message: "Email and password are required"
+      }));
+    }
 
     // TODO: 实现密码哈希
     const passwordHash = "hashed_" + password;
@@ -16,9 +25,17 @@ export const registerRoute = new Route({
         [email, passwordHash]
       );
 
-      return json({ user: result.rows[0] });
-    } catch (error) {
-      return json({ error: "User already exists" }, { status: 400 });
+      return jsonSuccess({ user: result.rows[0] });
+    } catch (error: any) {
+      // Check for unique constraint violation (PostgreSQL error code 23505)
+      if (error?.code === "23505") {
+        return jsonError(new APIError(
+          "USER_ALREADY_EXISTS",
+          "User already exists",
+          409
+        ));
+      }
+      throw error;
     }
-  },
+  }),
 });
