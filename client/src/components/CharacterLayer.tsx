@@ -3,30 +3,42 @@ export function CharacterLayer() {
     <div
       style={{
         position: "absolute",
-        top: "50%",
-        left: "50%",
-        transform: "translate(-50%, -50%)",
+        inset: 0,
+        zIndex: 10,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        flexDirection: "column",
+        pointerEvents: "none",
       }}
     >
+      {/* Character avatar */}
       <div
         style={{
-          width: "120px",
-          height: "120px",
+          width: "200px",
+          height: "200px",
           borderRadius: "50%",
-          background: "#2a2a4e",
+          background: "linear-gradient(135deg, #e94560 0%, #533483 100%)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          fontSize: "12px",
-          color: "#666",
+          fontSize: "80px",
+          boxShadow: "0 20px 60px rgba(233, 69, 96, 0.3)",
+          animation: "float 6s ease-in-out infinite",
         }}
       >
-        [角色占位]
+        🤖
       </div>
+
+      <style>{`
+        @keyframes float {
+          0%, 100% {
+            transform: translateY(0px);
+          }
+          50% {
+            transform: translateY(-20px);
+          }
+        }
+      `}</style>
     </div>
   );
 }

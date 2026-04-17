@@ -1,611 +1,454 @@
-// Package session provides session management
+/**
+ * Session Manager
+ * 管理 AI 会话的生命周期
+ */
+
 package session
 
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/loom/daemon/internal/store"
+	"github.com/loom/daemon/internal/runtime"
 )
 
-// Manager manages session lifecycle
+// Status 会话状态
+type Status string
+
+const (
+	StatusStarting Status = "starting"
+	StatusRunning  Status = "running"
+	StatusThinking Status = "thinking"
+	StatusToolCall Status = "tool_call"
+	StatusStopping Status = "stopping"
+	StatusStopped  Status = "stopped"
+	StatusError    Status = "error"
+)
+
+// Event 会话事件
+type Event struct {
+	SessionID string
+	Type      string // started | message | tool_call | thinking | stopped | error
+	Data      interface{}
+	Timestamp time.Time
+}
+
+// Session 表示一个运行时会话
+type Session struct {
+	ID           string
+	PID          int
+	RuntimeType  string
+	WorkingDir   string
+	Status       Status
+	StartedAt    time.Time
+	LastActivity time.Time
+	Metadata     map[string]string
+
+	// 运行时实例
+	runtime runtime.Runtime
+
+	// 进程引用
+	process *os.Process
+
+	// 取消函数
+	cancel context.CancelFunc
+
+	// 事件回调
+	onEvent func(Event)
+
+	// 互斥锁保护状态变更
+	mu sync.RWMutex
+}
+
+// SetStatus 设置会话状态（线程安全）
+func (s *Session) SetStatus(status Status) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Status = status
+	s.LastActivity = time.Now()
+}
+
+// GetStatus 获取会话状态（线程安全）
+func (s *Session) GetStatus() Status {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Status
+}
+
+// GetRuntime 获取 Runtime 实例（线程安全）
+func (s *Session) GetRuntime() runtime.Runtime {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.runtime
+}
+
+// emit 发送事件
+func (s *Session) emit(event Event) {
+	if s.onEvent != nil {
+		s.onEvent(event)
+	}
+}
+
+// ManagerConfig 管理器配置
+type ManagerConfig struct {
+	// 心跳间隔
+	HeartbeatInterval time.Duration
+
+	// 会话超时
+	SessionTimeout time.Duration
+
+	// 最大会话数
+	MaxSessions int
+}
+
+// DefaultManagerConfig 返回默认配置
+func DefaultManagerConfig() ManagerConfig {
+	return ManagerConfig{
+		HeartbeatInterval: 30 * time.Second,
+		SessionTimeout:    10 * time.Minute,
+		MaxSessions:       10,
+	}
+}
+
+// Manager 会话管理器
 type Manager struct {
-	store      store.SessionStore
-	index      *store.SessionIndex
-	scanner    *Scanner
-	hookServer *HookServer
-	logger     *slog.Logger
+	sessions map[string]*Session
+	mu       sync.RWMutex
+	config   ManagerConfig
 
-	activeSessions map[string]*ActiveSession
-	mu             sync.RWMutex
+	// 后台任务控制
+	heartbeatStop chan struct{}
+	wg            sync.WaitGroup
 }
 
-// ActiveSession represents an active (running) session
-type ActiveSession struct {
-	Session   *store.Session
-	PID       int
-	StartTime time.Time
-	Thinking  bool
-	Tracker   *ThinkingTracker
-}
-
-// CreateOptions for creating a new session
-type CreateOptions struct {
-	Path    string
-	Runtime string
-	Title   string
-}
-
-// StartOptions for starting a session
-type StartOptions struct {
-	PID              int
-	RuntimeSessionID string
-}
-
-// NewManager creates a new session manager
-func NewManager(storePath string, logger *slog.Logger) (*Manager, error) {
-	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+// NewManager 创建会话管理器
+func NewManager(config ManagerConfig) *Manager {
+	m := &Manager{
+		sessions:      make(map[string]*Session),
+		config:        config,
+		heartbeatStop: make(chan struct{}),
 	}
 
-	// Create store
-	s, err := store.NewFileSessionStore(storePath)
+	// 启动心跳检测
+	m.wg.Add(1)
+	go m.heartbeatLoop()
+
+	return m
+}
+
+// SpawnOptions 启动会话选项
+type SpawnOptions struct {
+	RuntimeType string
+	WorkingDir  string
+	Resume      bool
+	EnvVars     map[string]string
+	Metadata    map[string]string
+	OnEvent     func(Event)
+
+	// Runtime 配置
+	RuntimeConfig runtime.Config
+}
+
+// Spawn 启动新会话
+func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 检查最大会话数
+	if len(m.sessions) >= m.config.MaxSessions {
+		return nil, fmt.Errorf("max sessions reached: %d", m.config.MaxSessions)
+	}
+
+	// 创建 Runtime 实例
+	rtConfig := opts.RuntimeConfig
+	rtConfig.WorkingDir = opts.WorkingDir
+	rtConfig.EnvVars = opts.EnvVars
+
+	rt, err := runtime.Factory(opts.RuntimeType, rtConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create session store: %w", err)
+		return nil, fmt.Errorf("failed to create runtime: %w", err)
 	}
 
-	// Create index
-	idx := store.NewSessionIndex(s)
-	if err := idx.Load(); err != nil {
-		logger.Warn("failed to load session index", "error", err)
+	// 创建会话
+	session := &Session{
+		ID:           generateSessionID(),
+		RuntimeType:  opts.RuntimeType,
+		WorkingDir:   opts.WorkingDir,
+		Status:       StatusStarting,
+		StartedAt:    time.Now(),
+		LastActivity: time.Now(),
+		Metadata:     opts.Metadata,
+		runtime:      rt,
+		onEvent:      opts.OnEvent,
 	}
 
-	return &Manager{
-		store:          s,
-		index:          idx,
-		activeSessions: make(map[string]*ActiveSession),
-		logger:         logger,
-	}, nil
-}
+	// 创建带取消的上下文
+	ctx, cancel := context.WithCancel(ctx)
+	session.cancel = cancel
 
-// CreateSession creates a new session
-func (m *Manager) CreateSession(opts CreateOptions) (*store.Session, error) {
-	session := &store.Session{
-		ID:        uuid.New().String(),
-		Path:      opts.Path,
-		Runtime:   opts.Runtime,
-		Status:    store.StatusActive,
-		Title:     opts.Title,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+	// 启动会话进程
+	if err := m.startSession(ctx, session, opts); err != nil {
+		cancel()
+		return nil, err
 	}
 
-	if err := m.store.Create(session); err != nil {
-		return nil, fmt.Errorf("failed to create session: %w", err)
-	}
+	m.sessions[session.ID] = session
 
-	m.index.Add(session)
-
-	m.logger.Info("session created",
-		"session_id", session.ID,
-		"path", session.Path,
-		"runtime", session.Runtime,
-	)
+	// 发送 started 事件
+	session.emit(Event{
+		SessionID: session.ID,
+		Type:      "started",
+		Timestamp: time.Now(),
+	})
 
 	return session, nil
 }
 
-// StartSession starts a session with runtime
-func (m *Manager) StartSession(sessionID string, opts StartOptions) error {
-	session, err := m.store.Get(sessionID)
-	if err != nil {
-		return fmt.Errorf("session not found: %w", err)
-	}
+// startSession 启动会话进程
+func (m *Manager) startSession(ctx context.Context, session *Session, opts SpawnOptions) error {
+	// 这里我们实际上不需要启动一个长期运行的进程
+	// 因为每次 Chat 调用都会启动一个 Claude 进程
+	// 但为了管理方便，我们创建一个占位进程或记录
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Check if already active
-	if _, ok := m.activeSessions[sessionID]; ok {
-		return fmt.Errorf("session already active: %s", sessionID)
-	}
-
-	// Update session
-	session.Status = store.StatusActive
-	session.RuntimeSessionID = opts.RuntimeSessionID
-	session.UpdatedAt = time.Now()
-
-	if err := m.store.Update(session); err != nil {
-		return fmt.Errorf("failed to update session: %w", err)
-	}
-
-	m.index.Update(session)
-
-	// Create active session
-	m.activeSessions[sessionID] = &ActiveSession{
-		Session:   session,
-		PID:       opts.PID,
-		StartTime: time.Now(),
-	}
-
-	m.logger.Info("session started",
-		"session_id", sessionID,
-		"pid", opts.PID,
-		"runtime_session_id", opts.RuntimeSessionID,
-	)
+	session.SetStatus(StatusRunning)
+	session.LastActivity = time.Now()
 
 	return nil
 }
 
-// ResumeSession resumes an existing session
-func (m *Manager) ResumeSession(sessionID string) error {
-	session, err := m.store.Get(sessionID)
-	if err != nil {
-		return fmt.Errorf("session not found: %w", err)
+// Chat 发送聊天消息到会话
+func (m *Manager) Chat(ctx context.Context, sessionID string, req runtime.ChatRequest, onEvent func(runtime.StreamEvent)) error {
+	m.mu.RLock()
+	session, exists := m.sessions[sessionID]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	if session.Status == store.StatusArchived {
-		return fmt.Errorf("cannot resume archived session")
+	if session.runtime == nil {
+		return fmt.Errorf("session runtime not initialized")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// 更新状态为思考中
+	session.SetStatus(StatusThinking)
+	session.emit(Event{
+		SessionID: sessionID,
+		Type:      "thinking",
+		Data:      map[string]bool{"thinking": true},
+		Timestamp: time.Now(),
+	})
 
-	// Check if already active
-	if _, ok := m.activeSessions[sessionID]; ok {
-		return nil // Already active, nothing to do
+	// 包装回调以跟踪状态
+	wrappedOnEvent := func(event runtime.StreamEvent) {
+		// 更新最后活动时间
+		session.LastActivity = time.Now()
+
+		// 根据事件类型更新状态
+		switch event.Type {
+		case "tool_call":
+			session.SetStatus(StatusToolCall)
+			session.emit(Event{
+				SessionID: sessionID,
+				Type:      "tool_call",
+				Data:      event.ToolCall,
+				Timestamp: time.Now(),
+			})
+
+		case "done":
+			session.SetStatus(StatusRunning)
+			session.emit(Event{
+				SessionID: sessionID,
+				Type:      "message",
+				Data:      "completed",
+				Timestamp: time.Now(),
+			})
+
+		case "error":
+			session.SetStatus(StatusError)
+			session.emit(Event{
+				SessionID: sessionID,
+				Type:      "error",
+				Data:      event.Error,
+				Timestamp: time.Now(),
+			})
+		}
+
+		// 调用原始回调
+		onEvent(event)
 	}
 
-	// Update session status
-	session.Status = store.StatusActive
-	session.UpdatedAt = time.Now()
+	// 调用 Runtime.Chat
+	err := session.runtime.Chat(ctx, req, wrappedOnEvent)
 
-	if err := m.store.Update(session); err != nil {
-		return fmt.Errorf("failed to update session: %w", err)
+	// 恢复状态
+	if session.GetStatus() != StatusError {
+		session.SetStatus(StatusRunning)
 	}
 
-	m.index.Update(session)
-
-	// Create active session entry (without PID for now)
-	m.activeSessions[sessionID] = &ActiveSession{
-		Session:   session,
-		StartTime: time.Now(),
-	}
-
-	m.logger.Info("session resumed", "session_id", sessionID)
-
-	return nil
+	return err
 }
 
-// StopSession stops a running session
-func (m *Manager) StopSession(sessionID string) error {
+// Stop 停止会话
+func (m *Manager) Stop(sessionID string, force bool) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	session, exists := m.sessions[sessionID]
+	m.mu.Unlock()
 
-	active, ok := m.activeSessions[sessionID]
-	if !ok {
-		return fmt.Errorf("session not active: %s", sessionID)
+	if !exists {
+		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// Stop thinking tracker if exists
-	if active.Tracker != nil {
-		active.Tracker.Stop()
+	session.SetStatus(StatusStopping)
+
+	// 取消上下文
+	if session.cancel != nil {
+		session.cancel()
 	}
 
-	// Stop process if we have a PID
-	if active.PID > 0 {
-		process, err := os.FindProcess(active.PID)
-		if err == nil {
-			if err := process.Signal(os.Interrupt); err != nil {
-				m.logger.Warn("failed to send interrupt, trying kill",
-					"pid", active.PID,
-					"error", err,
-				)
-				process.Kill()
+	// 终止进程
+	if session.process != nil {
+		// 发送 SIGTERM
+		if err := session.process.Signal(syscall.SIGTERM); err != nil {
+			// 进程可能已经退出
+		}
+
+		// 等待进程退出
+		done := make(chan error, 1)
+		go func() {
+			_, err := session.process.Wait()
+			done <- err
+		}()
+
+		select {
+		case <-done:
+			// 正常退出
+		case <-time.After(5 * time.Second):
+			// 超时，强制终止
+			if force {
+				if err := session.process.Kill(); err != nil {
+					return fmt.Errorf("failed to kill process: %w", err)
+				}
 			}
 		}
 	}
 
-	// Update session status
-	session := active.Session
-	session.Status = store.StatusPaused
-	session.UpdatedAt = time.Now()
-
-	if err := m.store.Update(session); err != nil {
-		m.logger.Warn("failed to update session status", "error", err)
-	}
-
-	m.index.Update(session)
-	delete(m.activeSessions, sessionID)
-
-	m.logger.Info("session stopped", "session_id", sessionID)
-
-	return nil
-}
-
-// GetSession gets a session (from index for active, store for archived)
-func (m *Manager) GetSession(id string) (*store.Session, error) {
-	// Try index first (fast path)
-	if session, ok := m.index.Get(id); ok {
-		return session, nil
-	}
-
-	// Fall back to store
-	return m.store.Get(id)
-}
-
-// ListSessions lists sessions with filter
-func (m *Manager) ListSessions(opts store.ListOptions) ([]*store.Session, error) {
-	// Use index for better performance
-	return m.index.List(opts), nil
-}
-
-// ArchiveSession archives a session
-func (m *Manager) ArchiveSession(id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Stop if active
-	if active, ok := m.activeSessions[id]; ok {
-		if active.Tracker != nil {
-			active.Tracker.Stop()
-		}
-		delete(m.activeSessions, id)
-	}
-
-	if err := m.store.Archive(id); err != nil {
-		return err
-	}
-
-	// Update index
-	if session, err := m.store.Get(id); err == nil {
-		m.index.Update(session)
-	}
-
-	m.logger.Info("session archived", "session_id", id)
-
-	return nil
-}
-
-// UnarchiveSession unarchives a session
-func (m *Manager) UnarchiveSession(id string) error {
-	if err := m.store.Unarchive(id); err != nil {
-		return err
-	}
-
-	// Update index
-	if session, err := m.store.Get(id); err == nil {
-		m.index.Update(session)
-	}
-
-	m.logger.Info("session unarchived", "session_id", id)
-
-	return nil
-}
-
-// GetActiveSessions returns all active sessions
-func (m *Manager) GetActiveSessions() []*ActiveSession {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	sessions := make([]*ActiveSession, 0, len(m.activeSessions))
-	for _, active := range m.activeSessions {
-		sessions = append(sessions, active)
-	}
-
-	return sessions
-}
-
-// GetSessionThinking returns thinking state
-func (m *Manager) GetSessionThinking(sessionID string) (bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	active, ok := m.activeSessions[sessionID]
-	if !ok {
-		return false, fmt.Errorf("session not active: %s", sessionID)
-	}
-
-	if active.Tracker == nil {
-		return false, nil
-	}
-
-	return active.Tracker.IsThinking(), nil
-}
-
-// StartThinkingTracking starts thinking tracking for a session
-func (m *Manager) StartThinkingTracking(sessionID string, pid int, reader io.Reader) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	active, ok := m.activeSessions[sessionID]
-	if !ok {
-		return fmt.Errorf("session not active: %s", sessionID)
-	}
-
-	// Stop existing tracker if any
-	if active.Tracker != nil {
-		active.Tracker.Stop()
-	}
-
-	// Create new tracker
-	tracker := NewThinkingTracker(pid)
-	tracker.OnThinkingChange(func(thinking bool) {
-		m.mu.Lock()
-		if active, ok := m.activeSessions[sessionID]; ok {
-			active.Thinking = thinking
-		}
-		m.mu.Unlock()
+	session.SetStatus(StatusStopped)
+	session.emit(Event{
+		SessionID: sessionID,
+		Type:      "stopped",
+		Timestamp: time.Now(),
 	})
 
-	active.Tracker = tracker
-
-	// Start tracking in a goroutine
-	go func() {
-		if err := tracker.Start(context.Background(), reader); err != nil {
-			m.logger.Warn("thinking tracker stopped", "session_id", sessionID, "error", err)
-		}
-	}()
-
-	m.logger.Info("started thinking tracking", "session_id", sessionID, "pid", pid)
-
-	return nil
-}
-
-// StopThinkingTracking stops thinking tracking for a session
-func (m *Manager) StopThinkingTracking(sessionID string) error {
+	// 从管理器中移除
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	active, ok := m.activeSessions[sessionID]
-	if !ok {
-		return fmt.Errorf("session not active: %s", sessionID)
-	}
-
-	if active.Tracker == nil {
-		return nil
-	}
-
-	active.Tracker.Stop()
-	active.Tracker = nil
-	active.Thinking = false
-
-	m.logger.Info("stopped thinking tracking", "session_id", sessionID)
-
-	return nil
-}
-
-// AppendMessage appends a message to a session
-func (m *Manager) AppendMessage(sessionID string, message *store.StoredMessage) error {
-	if err := m.store.AppendMessage(sessionID, message); err != nil {
-		return err
-	}
-
-	// Update index
-	if session, err := m.store.Get(sessionID); err == nil {
-		m.index.Update(session)
-	}
-
-	return nil
-}
-
-// GetMessages retrieves messages from a session
-func (m *Manager) GetMessages(sessionID string, limit, offset int) ([]*store.StoredMessage, error) {
-	return m.store.GetMessages(sessionID, limit, offset)
-}
-
-// AutoArchive archives old inactive sessions
-func (m *Manager) AutoArchive(olderThan time.Duration) error {
-	return store.ArchiveOldSessions(m.store, olderThan)
-}
-
-// AutoCleanup permanently deletes old archived sessions
-func (m *Manager) AutoCleanup(olderThan time.Duration) error {
-	_, err := store.CleanupArchivedSessions(m.store, olderThan)
-	return err
-}
-
-// Shutdown gracefully stops all sessions
-func (m *Manager) Shutdown() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.logger.Info("shutting down session manager")
-
-	// Stop all thinking trackers
-	for sessionID, active := range m.activeSessions {
-		if active.Tracker != nil {
-			active.Tracker.Stop()
-		}
-
-		// Update session status
-		active.Session.Status = store.StatusPaused
-		active.Session.UpdatedAt = time.Now()
-		if err := m.store.Update(active.Session); err != nil {
-			m.logger.Warn("failed to update session on shutdown", "session_id", sessionID, "error", err)
-		}
-
-		m.index.Update(active.Session)
-	}
-
-	// Clear active sessions
-	m.activeSessions = make(map[string]*ActiveSession)
-
-	// Close store
-	if err := m.store.Close(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// GetStore returns the underlying store (for advanced operations)
-func (m *Manager) GetStore() store.SessionStore {
-	return m.store
-}
-
-// GetIndex returns the session index
-func (m *Manager) GetIndex() *store.SessionIndex {
-	return m.index
-}
-
-// UpdateSessionRuntimeID updates the runtime session ID for a session
-func (m *Manager) UpdateSessionRuntimeID(sessionID, runtimeSessionID string) error {
-	session, err := m.store.Get(sessionID)
-	if err != nil {
-		return err
-	}
-
-	session.RuntimeSessionID = runtimeSessionID
-	session.UpdatedAt = time.Now()
-
-	if err := m.store.Update(session); err != nil {
-		return err
-	}
-
-	m.index.Update(session)
-
-	// Update active session if exists
-	m.mu.Lock()
-	if active, ok := m.activeSessions[sessionID]; ok {
-		active.Session.RuntimeSessionID = runtimeSessionID
-	}
+	delete(m.sessions, sessionID)
 	m.mu.Unlock()
 
 	return nil
 }
 
-// SetSessionError sets an error message on a session
-func (m *Manager) SetSessionError(sessionID, errorMsg string) error {
-	session, err := m.store.Get(sessionID)
-	if err != nil {
-		return err
+// Get 获取会话
+func (m *Manager) Get(sessionID string) (*Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	session, exists := m.sessions[sessionID]
+	if !exists {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	session.Status = store.StatusError
-	session.ErrorMsg = errorMsg
-	session.UpdatedAt = time.Now()
+	return session, nil
+}
 
-	if err := m.store.Update(session); err != nil {
-		return err
+// List 列出所有会话
+func (m *Manager) List() []*Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
 	}
 
-	m.index.Update(session)
-
-	return nil
+	return sessions
 }
 
-// GetSessionByRuntimeID gets a session by runtime session ID
-func (m *Manager) GetSessionByRuntimeID(runtimeID string) (*store.Session, error) {
-	// Try index first
-	if session, ok := m.index.GetByRuntimeID(runtimeID); ok {
-		return session, nil
+// heartbeatLoop 心跳检测循环
+func (m *Manager) heartbeatLoop() {
+	defer m.wg.Done()
+
+	ticker := time.NewTicker(m.config.HeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			m.checkSessions()
+		case <-m.heartbeatStop:
+			return
+		}
 	}
-
-	// Fall back to store
-	return m.store.GetByRuntimeSessionID(runtimeID)
 }
 
-// InitializeScanner initializes the session scanner
-func (m *Manager) InitializeScanner(ctx context.Context) error {
-	sessionDir := m.getStoreBasePath()
-	m.scanner = NewScanner(sessionDir)
-
-	if err := m.scanner.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start scanner: %w", err)
-	}
-
-	m.scanner.OnSessionFound(func(sessionID string) {
-		m.handleSessionDiscovered(sessionID)
-	})
-
-	return nil
-}
-
-// InitializeHookServer initializes the hook server
-func (m *Manager) InitializeHookServer() error {
-	m.hookServer = NewHookServer(0) // Let OS assign port
-
-	if err := m.hookServer.Start(); err != nil {
-		return fmt.Errorf("failed to start hook server: %w", err)
-	}
-
-	m.hookServer.OnSessionHook(func(sessionID string, data SessionHookData) {
-		m.handleSessionHook(sessionID, data)
-	})
-
-	return nil
-}
-
-// GetHookServer returns the hook server
-func (m *Manager) GetHookServer() *HookServer {
-	return m.hookServer
-}
-
-// GetScanner returns the scanner
-func (m *Manager) GetScanner() *Scanner {
-	return m.scanner
-}
-
-// handleSessionDiscovered handles a session discovered by the scanner
-func (m *Manager) handleSessionDiscovered(sessionID string) {
-	m.logger.Info("session discovered by scanner", "session_id", sessionID)
-
+// checkSessions 检查会话健康状态
+func (m *Manager) checkSessions() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if active, ok := m.activeSessions[sessionID]; ok {
-		active.Session.Status = store.StatusActive
-		m.index.Update(active.Session)
-	}
-}
+	now := time.Now()
 
-// handleSessionHook handles a session hook from the hook server
-func (m *Manager) handleSessionHook(sessionID string, data SessionHookData) {
-	m.logger.Info("session hook received",
-		"session_id", sessionID,
-		"event", data.Event,
-		"path", data.Path,
-	)
+	for id, session := range m.sessions {
+		// 检查是否超时
+		if now.Sub(session.LastActivity) > m.config.SessionTimeout {
+			// 超时，标记为空闲，可选：自动停止
+			// TODO: 实现自动停止策略
+			_ = id
+		}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	switch data.Event {
-	case HookEventSessionStart:
-		if _, ok := m.activeSessions[sessionID]; !ok {
-			// Create new active session
-			m.activeSessions[sessionID] = &ActiveSession{
-				Session: &store.Session{
-					ID:        sessionID,
-					Path:      data.Path,
-					Status:    store.StatusActive,
-					CreatedAt: time.Now(),
-					UpdatedAt: time.Now(),
-				},
-				StartTime: time.Now(),
+		// 检查进程是否存活（如果有进程）
+		if session.process != nil {
+			if err := session.process.Signal(syscall.Signal(0)); err != nil {
+				// 进程已死
+				session.SetStatus(StatusError)
+				session.emit(Event{
+					SessionID: id,
+					Type:      "error",
+					Data:      "process died unexpectedly",
+					Timestamp: time.Now(),
+				})
 			}
 		}
-
-	case HookEventSessionEnd:
-		if active, ok := m.activeSessions[sessionID]; ok {
-			active.Session.Status = store.StatusPaused
-		}
 	}
 }
 
-// getStoreBasePath gets the base path from the store
-func (m *Manager) getStoreBasePath() string {
-	// We know the underlying store is FileSessionStore
-	if fs, ok := m.store.(*store.FileSessionStore); ok {
-		return fs.GetBasePath()
+// Close 关闭管理器
+func (m *Manager) Close() error {
+	close(m.heartbeatStop)
+
+	// 等待心跳循环退出
+	m.wg.Wait()
+
+	// 停止所有会话
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
 	}
-	return ""
+	m.mu.Unlock()
+
+	for _, session := range sessions {
+		m.Stop(session.ID, true)
+	}
+
+	return nil
+}
+
+// generateSessionID 生成会话 ID
+func generateSessionID() string {
+	return fmt.Sprintf("sess_%d", time.Now().UnixNano())
 }

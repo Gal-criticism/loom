@@ -56,7 +56,9 @@
       "Bash(bun remove:*)",
       "Bash(bun add:*)",
       "Bash(DATABASE_URL=\"postgresql://loom:loom_dev@localhost:5432/loom\" ./node_modules/.bin/prisma generate:*)",
-      "Bash(bun test:*)"
+      "Bash(bun test:*)",
+      "Bash(go get:*)",
+      "Bash(rm:*)"
     ]
   }
 }
