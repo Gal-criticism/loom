@@ -7,6 +7,9 @@ import { Errors } from "~/lib/errors";
 import { jsonSuccess, jsonError } from "~/lib/response";
 import { withErrorHandler } from "~/middleware/errorHandler";
 import { logger } from "~/lib/logger";
+import { createMessageSchema, paginationSchema } from "~/lib/schemas";
+import { checkRateLimit, rateLimitConfigs, getRateLimitHeaders } from "~/lib/ratelimit";
+import { z } from "zod";
 
 const ws = getWSServer();
 
@@ -22,12 +25,43 @@ export const listMessagesRoute = new Route({
         return jsonError(Errors.UNAUTHORIZED);
       }
 
+      // Rate limiting
+      const rateLimit = checkRateLimit(`list_messages:${user.id}`, rateLimitConfigs.read);
+      if (!rateLimit.allowed) {
+        return jsonError(
+          Errors.RATE_LIMITED.withDetails({
+            retry_after: rateLimit.retryAfter,
+          }),
+          { headers: getRateLimitHeaders(rateLimit) }
+        );
+      }
+
       const url = new URL(req.url);
       const sessionId = url.searchParams.get("session_id");
 
       if (!sessionId) {
         return jsonError(Errors.MISSING_SESSION_ID);
       }
+
+      // Validate UUID format
+      const uuidResult = z.string().uuid().safeParse(sessionId);
+      if (!uuidResult.success) {
+        return jsonError(Errors.INVALID_SESSION_ID);
+      }
+
+      // Validate pagination
+      const paginationResult = paginationSchema.safeParse({
+        limit: url.searchParams.get("limit"),
+        offset: url.searchParams.get("offset"),
+      });
+
+      if (!paginationResult.success) {
+        return jsonError(Errors.INVALID_PAGINATION.withDetails({
+          issues: paginationResult.error.issues,
+        }));
+      }
+
+      const { limit, offset } = paginationResult.data;
 
       // Validate session belongs to user
       const session = await db.session.findFirst({
@@ -41,30 +75,18 @@ export const listMessagesRoute = new Route({
         return jsonError(Errors.SESSION_NOT_FOUND);
       }
 
-      // Parse pagination parameters
-      const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10), 100);
-      const offset = parseInt(url.searchParams.get("offset") || "0", 10);
-
-      // Validate pagination parameters
-      if (isNaN(limit) || limit < 0) {
-        return jsonError(Errors.INVALID_PAGINATION.withDetails({ field: "limit" }));
-      }
-
-      if (isNaN(offset) || offset < 0) {
-        return jsonError(Errors.INVALID_PAGINATION.withDetails({ field: "offset" }));
-      }
-
-      const messages = await db.message.findMany({
-        where: { sessionId },
-        orderBy: { createdAt: "asc" },
-        take: limit,
-        skip: offset,
-      });
-
-      // Get total count for pagination metadata
-      const total = await db.message.count({
-        where: { sessionId },
-      });
+      // Fetch messages with pagination
+      const [messages, total] = await Promise.all([
+        db.message.findMany({
+          where: { sessionId },
+          orderBy: { createdAt: "asc" },
+          take: limit,
+          skip: offset,
+        }),
+        db.message.count({
+          where: { sessionId },
+        }),
+      ]);
 
       // Transform to match expected response format
       const transformedMessages = messages.map((message) => ({
@@ -73,7 +95,7 @@ export const listMessagesRoute = new Route({
         role: message.role,
         content: message.content,
         tools: message.tools,
-        created_at: message.createdAt,
+        created_at: message.createdAt.toISOString(),
       }));
 
       return jsonSuccess(
@@ -85,7 +107,8 @@ export const listMessagesRoute = new Route({
             offset,
             has_more: offset + messages.length < total,
           },
-        }
+        },
+        { headers: getRateLimitHeaders(rateLimit) }
       );
     });
   },
@@ -103,51 +126,69 @@ export const sendMessageRoute = new Route({
         return jsonError(Errors.UNAUTHORIZED);
       }
 
-      const body = await req.json();
-      const { session_id, content } = body;
-
-      // Validate session_id
-      if (!session_id) {
-        return jsonError(Errors.MISSING_SESSION_ID);
+      // Strict rate limiting for message creation
+      const rateLimit = checkRateLimit(`send_message:${user.id}`, rateLimitConfigs.messageCreate);
+      if (!rateLimit.allowed) {
+        return jsonError(
+          Errors.RATE_LIMITED.withDetails({
+            retry_after: rateLimit.retryAfter,
+            message: `Rate limit exceeded. Try again in ${rateLimit.retryAfter} seconds.`,
+          }),
+          { headers: getRateLimitHeaders(rateLimit) }
+        );
       }
 
-      if (typeof session_id !== "string") {
-        return jsonError(Errors.INVALID_SESSION_ID);
+      // Parse and validate body
+      const body = await req.json().catch(() => null);
+      if (!body) {
+        return jsonError(Errors.INVALID_INPUT.withDetails({ message: "Invalid JSON body" }));
       }
 
-      // Validate content
-      if (!content) {
-        return jsonError(Errors.MISSING_CONTENT);
+      const validationResult = createMessageSchema.safeParse(body);
+      if (!validationResult.success) {
+        return jsonError(
+          Errors.INVALID_INPUT.withDetails({
+            issues: validationResult.error.issues,
+          })
+        );
       }
 
-      if (typeof content !== "string" || content.trim().length === 0) {
-        return jsonError(Errors.INVALID_CONTENT);
-      }
+      const { session_id, content } = validationResult.data;
 
-      if (content.length > 100000) {
-        return jsonError(Errors.CONTENT_TOO_LONG);
-      }
-
-      // Validate session belongs to user
-      const session = await db.session.findFirst({
-        where: {
-          id: session_id,
-          userId: user.id,
-        },
+      // Validate session belongs to user (with timeout protection)
+      const session = await Promise.race([
+        db.session.findFirst({
+          where: {
+            id: session_id,
+            userId: user.id,
+          },
+        }),
+        new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error("Database query timeout")), 5000)
+        ),
+      ]).catch((error) => {
+        logger.error({ error, userId: user.id, sessionId: session_id }, "Session lookup failed");
+        return null;
       });
 
       if (!session) {
         return jsonError(Errors.SESSION_NOT_FOUND);
       }
 
-      // Save user message
-      const message = await db.message.create({
-        data: {
-          sessionId: session_id,
-          role: "user",
-          content: content.trim(),
-        },
-      });
+      // Save user message and send to Daemon in parallel
+      let message;
+      try {
+        message = await db.message.create({
+          data: {
+            sessionId: session_id,
+            role: "user",
+            content: content.trim(),
+          },
+        });
+      } catch (error) {
+        logger.error({ error, userId: user.id, sessionId: session_id }, "Failed to save message");
+        return jsonError(Errors.DATABASE_ERROR);
+      }
 
       // Transform to match expected response format
       const transformedMessage = {
@@ -156,19 +197,32 @@ export const sendMessageRoute = new Route({
         role: message.role,
         content: message.content,
         tools: message.tools,
-        created_at: message.createdAt,
+        created_at: message.createdAt.toISOString(),
       };
 
-      // Send to Daemon via WebSocket
-      try {
-        const daemonMessage = formatUserMessage(session_id, message.id, message.content);
-        ws.sendToDaemon(user.device_id, daemonMessage);
-      } catch (error) {
-        logger.error(error, "Failed to send message to daemon");
-        // Don't fail the request if WebSocket fails - message is already saved
-      }
+      // Send to Daemon via WebSocket (non-blocking)
+      const daemonMessage = formatUserMessage(session_id, message.id, message.content);
 
-      return jsonSuccess({ message: transformedMessage }, undefined, { status: 201 });
+      // Fire and forget with timeout
+      Promise.race([
+        ws.sendToDaemon(user.device_id, daemonMessage),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("WebSocket send timeout")), 5000)
+        ),
+      ]).catch((error) => {
+        logger.error({
+          error,
+          deviceId: user.device_id,
+          messageId: message.id,
+        }, "Failed to send message to Daemon");
+        // Don't fail the request - message is saved and will be retried
+      });
+
+      return jsonSuccess(
+        { message: transformedMessage },
+        undefined,
+        { status: 201, headers: getRateLimitHeaders(rateLimit) }
+      );
     });
   },
 });

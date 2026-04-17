@@ -76,6 +76,13 @@ export const Errors = {
     400
   ),
 
+  // Rate Limiting
+  RATE_LIMITED: new APIError(
+    "RATE_LIMITED",
+    "Rate limit exceeded. Please try again later.",
+    429
+  ),
+
   // Service Errors
   DAEMON_OFFLINE: new APIError(
     "DAEMON_OFFLINE",

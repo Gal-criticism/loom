@@ -3,6 +3,8 @@ import { getRouter } from "./router";
 import { initWSServer } from "./lib/ws";
 import { logger } from "./lib/logger";
 import { config } from "./lib/config";
+import { startRateLimitCleanup } from "./lib/ratelimit";
+import { startHealthMonitoring } from "./lib/health";
 
 // Initialize WebSocket server on startup
 initWSServer().catch((error) => {
@@ -10,11 +12,21 @@ initWSServer().catch((error) => {
   // Don't exit - the server can still handle HTTP requests
 });
 
+// Start production-grade services
+startRateLimitCleanup();
+startHealthMonitoring();
+
 logger.info({
   port: config.app.port,
   env: config.app.env,
   logLevel: config.app.logLevel,
-}, "Loom backend starting");
+  features: {
+    rateLimiting: true,
+    healthMonitoring: true,
+    messageValidation: true,
+    transactionSupport: true,
+  },
+}, "Loom backend starting (production mode)");
 
 export default createStartHandler({
   createRouter: () => getRouter(),

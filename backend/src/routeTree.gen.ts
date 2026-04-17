@@ -14,6 +14,11 @@ import {
   listMessagesRoute,
   sendMessageRoute,
 } from "./routes/api/messages/index";
+import {
+  healthRoute,
+  healthLiveRoute,
+  healthReadyRoute,
+} from "./routes/api/health";
 
 declare module "@tanstack/start" {
   interface FileRoutesByPath {
@@ -37,4 +42,8 @@ export const routeTree = rootRoute.addChildren([
   // Message routes
   listMessagesRoute,
   sendMessageRoute,
+  // Health check routes
+  healthRoute,
+  healthLiveRoute,
+  healthReadyRoute,
 ]);

@@ -4,6 +4,10 @@ import { getCurrentUser } from "~/lib/auth";
 import { Errors } from "~/lib/errors";
 import { jsonSuccess, jsonError } from "~/lib/response";
 import { withErrorHandler } from "~/middleware/errorHandler";
+import { createSessionSchema } from "~/lib/schemas";
+import { checkRateLimit, rateLimitConfigs, getRateLimitHeaders } from "~/lib/ratelimit";
+import { logger } from "~/lib/logger";
+import { z } from "zod";
 
 // GET /api/sessions - List all sessions for current user
 export const listSessionsRoute = new Route({
@@ -17,6 +21,15 @@ export const listSessionsRoute = new Route({
         return jsonError(Errors.UNAUTHORIZED);
       }
 
+      // Rate limiting
+      const rateLimit = checkRateLimit(`list_sessions:${user.id}`, rateLimitConfigs.read);
+      if (!rateLimit.allowed) {
+        return jsonError(
+          Errors.RATE_LIMITED.withDetails({ retry_after: rateLimit.retryAfter }),
+          { headers: getRateLimitHeaders(rateLimit) }
+        );
+      }
+
       const sessions = await db.session.findMany({
         where: { userId: user.id },
         include: {
@@ -25,6 +38,9 @@ export const listSessionsRoute = new Route({
               name: true,
               avatarUrl: true,
             },
+          },
+          _count: {
+            select: { messages: true },
           },
         },
         orderBy: { updatedAt: "desc" },
@@ -40,9 +56,14 @@ export const listSessionsRoute = new Route({
         updated_at: session.updatedAt,
         character_name: session.character?.name,
         character_avatar: session.character?.avatarUrl,
+        message_count: session._count.messages,
       }));
 
-      return jsonSuccess({ sessions: transformedSessions });
+      return jsonSuccess(
+        { sessions: transformedSessions },
+        undefined,
+        { headers: getRateLimitHeaders(rateLimit) }
+      );
     });
   },
 });
@@ -59,19 +80,34 @@ export const createSessionRoute = new Route({
         return jsonError(Errors.UNAUTHORIZED);
       }
 
-      const { title, character_id } = await req.json();
-
-      // Validate title
-      if (title !== undefined && (typeof title !== "string" || title.length > 255)) {
-        return jsonError(Errors.INVALID_TITLE);
+      // Rate limiting
+      const rateLimit = checkRateLimit(`create_session:${user.id}`, rateLimitConfigs.session);
+      if (!rateLimit.allowed) {
+        return jsonError(
+          Errors.RATE_LIMITED.withDetails({ retry_after: rateLimit.retryAfter }),
+          { headers: getRateLimitHeaders(rateLimit) }
+        );
       }
 
-      // Validate character_id if provided
-      if (character_id !== undefined && character_id !== null) {
-        if (typeof character_id !== "string") {
-          return jsonError(Errors.INVALID_CHARACTER_ID);
-        }
+      // Parse and validate body
+      const body = await req.json().catch(() => null);
+      if (!body) {
+        return jsonError(Errors.INVALID_INPUT.withDetails({ message: "Invalid JSON body" }));
+      }
 
+      const validationResult = createSessionSchema.safeParse(body);
+      if (!validationResult.success) {
+        return jsonError(
+          Errors.INVALID_INPUT.withDetails({
+            issues: validationResult.error.issues,
+          })
+        );
+      }
+
+      const { title, character_id } = validationResult.data;
+
+      // Validate character_id if provided
+      if (character_id) {
         const character = await db.character.findFirst({
           where: {
             id: character_id,
@@ -92,6 +128,12 @@ export const createSessionRoute = new Route({
         },
       });
 
+      logger.info({
+        sessionId: session.id,
+        userId: user.id,
+        characterId: character_id,
+      }, "Session created");
+
       // Transform to match expected response format
       const transformedSession = {
         id: session.id,
@@ -102,7 +144,11 @@ export const createSessionRoute = new Route({
         updated_at: session.updatedAt,
       };
 
-      return jsonSuccess({ session: transformedSession }, undefined, { status: 201 });
+      return jsonSuccess(
+        { session: transformedSession },
+        undefined,
+        { status: 201, headers: getRateLimitHeaders(rateLimit) }
+      );
     });
   },
 });
