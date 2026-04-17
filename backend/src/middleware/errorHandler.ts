@@ -1,5 +1,6 @@
 import { APIError, Errors, mapPrismaError } from "~/lib/errors";
 import { jsonError } from "~/lib/response";
+import { logger } from "~/lib/logger";
 
 /**
  * Wraps a route handler with centralized error handling.
@@ -23,13 +24,13 @@ export async function withErrorHandler<T>(
       (error.name === "PrismaClientKnownRequestError" ||
         error.name?.includes("Prisma"))
     ) {
-      console.error("Prisma error:", error);
+      logger.error(error, "Prisma error");
       const mappedError = mapPrismaError(error);
       return jsonError(mappedError) as unknown as T;
     }
 
     // Handle unexpected errors
-    console.error("Unhandled error:", error);
+    logger.error(error, "Unhandled error");
     return jsonError(Errors.INTERNAL_ERROR) as unknown as T;
   }
 }

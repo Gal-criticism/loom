@@ -6,6 +6,7 @@ import { formatUserMessage } from "~/lib/messageHandler";
 import { Errors } from "~/lib/errors";
 import { jsonSuccess, jsonError } from "~/lib/response";
 import { withErrorHandler } from "~/middleware/errorHandler";
+import { logger } from "~/lib/logger";
 
 const ws = getWSServer();
 
@@ -163,7 +164,7 @@ export const sendMessageRoute = new Route({
         const daemonMessage = formatUserMessage(session_id, message.id, message.content);
         ws.sendToDaemon(user.device_id, daemonMessage);
       } catch (error) {
-        console.error("Failed to send message to daemon:", error);
+        logger.error(error, "Failed to send message to daemon");
         // Don't fail the request if WebSocket fails - message is already saved
       }
 

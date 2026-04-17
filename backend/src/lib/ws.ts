@@ -1,5 +1,7 @@
 import { Centrifuge, Subscription } from "centrifuge";
 import { processDaemonMessage, ClientMessage } from "./messageHandler";
+import { config } from "./config";
+import { logger } from "./logger";
 
 // WebSocket connection states
 export enum ConnectionState {
@@ -71,8 +73,8 @@ class WSServerImpl implements WSServer {
   private centrifugoToken: string;
 
   constructor() {
-    this.centrifugoUrl = process.env.CENTRIFUGO_URL || "ws://localhost:8000/connection/websocket";
-    this.centrifugoToken = process.env.CENTRIFUGO_TOKEN || "dev-token";
+    this.centrifugoUrl = config.centrifugo.url;
+    this.centrifugoToken = config.centrifugo.token;
 
     this.centrifuge = new Centrifuge(this.centrifugoUrl, {
       token: this.centrifugoToken,
@@ -84,10 +86,10 @@ class WSServerImpl implements WSServer {
   private setupEventHandlers(): void {
     // Connection established
     this.centrifuge.on("connected", (ctx) => {
-      console.log("[WebSocket] Connected to Centrifugo", {
+      logger.info({
         clientId: ctx.client,
         transport: ctx.transport,
-      });
+      }, "[WebSocket] Connected to Centrifugo");
       this.state = ConnectionState.CONNECTED;
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
@@ -98,9 +100,9 @@ class WSServerImpl implements WSServer {
 
     // Connection disconnected
     this.centrifuge.on("disconnected", (ctx) => {
-      console.log("[WebSocket] Disconnected from Centrifugo", {
+      logger.info({
         reason: ctx.reason,
-      });
+      }, "[WebSocket] Disconnected from Centrifugo");
       // Always attempt to reconnect on disconnect
       this.state = ConnectionState.RECONNECTING;
       this.scheduleReconnect();
@@ -108,19 +110,19 @@ class WSServerImpl implements WSServer {
 
     // Error handling
     this.centrifuge.on("error", (ctx) => {
-      console.error("[WebSocket] Centrifuge error:", ctx.error);
+      logger.error(ctx.error, "[WebSocket] Centrifuge error");
     });
   }
 
   private async resubscribeAll(): Promise<void> {
-    console.log("[WebSocket] Re-subscribing to all user channels...");
+    logger.info("[WebSocket] Re-subscribing to all user channels...");
 
     // Re-subscribe to all device channels
     for (const [deviceId, userId] of this.deviceToUser.entries()) {
       try {
         await this.subscribeToUserChannel(deviceId, userId);
       } catch (error) {
-        console.error(`[WebSocket] Failed to re-subscribe to user:${deviceId}:`, error);
+        logger.error({ deviceId, error }, `[WebSocket] Failed to re-subscribe to user:${deviceId}`);
       }
     }
   }
@@ -174,7 +176,7 @@ class WSServerImpl implements WSServer {
       try {
         meta.subscription.unsubscribe();
       } catch (error) {
-        console.error(`[WebSocket] Error unsubscribing from ${deviceId}:`, error);
+        logger.error({ deviceId, error }, "[WebSocket] Error unsubscribing");
       }
     }
     this.daemonSubscriptions.clear();
@@ -190,7 +192,7 @@ class WSServerImpl implements WSServer {
     }
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error("[WebSocket] Max reconnection attempts reached, giving up");
+      logger.error("[WebSocket] Max reconnection attempts reached, giving up");
       this.state = ConnectionState.DISCONNECTED;
       return;
     }
@@ -201,12 +203,12 @@ class WSServerImpl implements WSServer {
       this.maxReconnectDelay
     );
 
-    console.log(`[WebSocket] Scheduling reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms`);
+    logger.info({ attempt: this.reconnectAttempts, maxAttempts: this.maxReconnectAttempts, delay }, "[WebSocket] Scheduling reconnect attempt");
 
     this.reconnectTimeoutId = setTimeout(() => {
       this.reconnectTimeoutId = null;
       if (this.state === ConnectionState.RECONNECTING) {
-        console.log("[WebSocket] Attempting to reconnect...");
+        logger.info("[WebSocket] Attempting to reconnect...");
         this.centrifuge.connect();
       }
     }, delay);
@@ -260,7 +262,7 @@ class WSServerImpl implements WSServer {
     const subscription = this.centrifuge.newSubscription(channel);
 
     subscription.on("publication", async (ctx) => {
-      console.log(`[WebSocket] Received message from Daemon on ${channel}:`, ctx.data);
+      logger.info({ channel, data: ctx.data }, "[WebSocket] Received message from Daemon");
 
       try {
         // Process the Daemon message
@@ -271,20 +273,20 @@ class WSServerImpl implements WSServer {
           this.broadcast(userId, clientMessage);
         }
       } catch (error) {
-        console.error("[WebSocket] Error processing Daemon message:", error);
+        logger.error(error, "[WebSocket] Error processing Daemon message");
       }
     });
 
     subscription.on("subscribed", () => {
-      console.log(`[WebSocket] Subscribed to channel: ${channel}`);
+      logger.info({ channel }, "[WebSocket] Subscribed to channel");
     });
 
     subscription.on("unsubscribed", () => {
-      console.log(`[WebSocket] Unsubscribed from channel: ${channel}`);
+      logger.info({ channel }, "[WebSocket] Unsubscribed from channel");
     });
 
     subscription.on("error", (ctx) => {
-      console.error(`[WebSocket] Subscription error for ${channel}:`, ctx.error);
+      logger.error({ channel, error: ctx.error }, "[WebSocket] Subscription error");
     });
 
     // Subscribe to the channel
@@ -301,7 +303,7 @@ class WSServerImpl implements WSServer {
    * Handle new client WebSocket connection
    */
   handleConnection(ws: WebSocket, deviceId: string, userId: string): void {
-    console.log(`[WebSocket] New client connection: deviceId=${deviceId}, userId=${userId}`);
+    logger.info({ deviceId, userId }, "[WebSocket] New client connection");
 
     // Store connection
     this.clientConnections.set(ws, { ws, deviceId, userId });
@@ -317,9 +319,9 @@ class WSServerImpl implements WSServer {
 
     // Subscribe to user channel to receive Daemon messages
     this.subscribeToUserChannel(deviceId, userId).catch((error) => {
-      console.error(`[WebSocket] Failed to subscribe to user channel for ${deviceId}:`, error);
+      logger.error({ deviceId, error }, "[WebSocket] Failed to subscribe to user channel");
       // Disconnect client to prevent memory leak and stale connections
-      console.log(`[WebSocket] Disconnecting client ${deviceId} due to subscription failure`);
+      logger.info({ deviceId }, "[WebSocket] Disconnecting client due to subscription failure");
       ws.close(1011, "Subscription failed");
       this.removeConnection(ws);
     });
@@ -330,7 +332,7 @@ class WSServerImpl implements WSServer {
     });
 
     ws.addEventListener("error", (error) => {
-      console.error(`[WebSocket] Client connection error for ${deviceId}:`, error);
+      logger.error({ deviceId, error }, "[WebSocket] Client connection error");
       this.removeConnection(ws);
     });
   }
@@ -344,7 +346,7 @@ class WSServerImpl implements WSServer {
       return;
     }
 
-    console.log(`[WebSocket] Removing client connection: deviceId=${conn.deviceId}`);
+    logger.info({ deviceId: conn.deviceId }, "[WebSocket] Removing client connection");
 
     // Remove from client connections
     this.clientConnections.delete(ws);
@@ -371,7 +373,7 @@ class WSServerImpl implements WSServer {
     if (!hasOtherConnections) {
       const meta = this.daemonSubscriptions.get(conn.deviceId);
       if (meta) {
-        console.log(`[WebSocket] Unsubscribing from user:${conn.deviceId} (no more clients)`);
+        logger.info({ deviceId: conn.deviceId }, "[WebSocket] Unsubscribing from user channel (no more clients)");
         meta.subscription.unsubscribe();
         this.daemonSubscriptions.delete(conn.deviceId);
         this.deviceToUser.delete(conn.deviceId);
@@ -385,7 +387,7 @@ class WSServerImpl implements WSServer {
   broadcast(userId: string, message: ClientMessage): void {
     const connections = this.userConnections.get(userId);
     if (!connections || connections.size === 0) {
-      console.log(`[WebSocket] No active connections for user ${userId}`);
+      logger.info({ userId }, "[WebSocket] No active connections for user");
       return;
     }
 
@@ -399,7 +401,7 @@ class WSServerImpl implements WSServer {
       }
     }
 
-    console.log(`[WebSocket] Broadcasted message to ${sentCount} clients for user ${userId}`);
+    logger.info({ userId, sentCount }, "[WebSocket] Broadcasted message to clients");
   }
 
   /**
@@ -409,7 +411,7 @@ class WSServerImpl implements WSServer {
   broadcastToSession(sessionId: string, message: ClientMessage): void {
     // For now, broadcast to all users and let clients filter
     // In a production system, we'd track which sessions each client is viewing
-    console.log(`[WebSocket] Session broadcast not fully implemented, using user broadcast`);
+    logger.warn({ sessionId }, "[WebSocket] Session broadcast not fully implemented, using user broadcast");
     throw new Error("NotImplementedError: broadcastToSession is not yet implemented");
   }
 
@@ -421,16 +423,16 @@ class WSServerImpl implements WSServer {
     const channel = `daemon:${deviceId}`;
 
     if (this.state !== ConnectionState.CONNECTED) {
-      console.error(`[WebSocket] Cannot send to Daemon: not connected to Centrifugo`);
+      logger.error("[WebSocket] Cannot send to Daemon: not connected to Centrifugo");
       throw new Error("WebSocket not connected");
     }
 
-    console.log(`[WebSocket] Sending message to Daemon on ${channel}:`, message);
+    logger.info({ channel, message }, "[WebSocket] Sending message to Daemon");
 
     try {
       await this.centrifuge.publish(channel, message);
     } catch (error) {
-      console.error(`[WebSocket] Failed to publish to ${channel}:`, error);
+      logger.error({ channel, error }, "[WebSocket] Failed to publish to channel");
       throw error;
     }
   }

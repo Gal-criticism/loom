@@ -1,5 +1,5 @@
 import { Route } from "@tanstack/start";
-import { db } from "~/lib/db";
+import { db } from "~/lib/prisma";
 import { withErrorHandler } from "~/middleware/errorHandler";
 import { jsonSuccess, jsonError } from "~/lib/response";
 import { Errors, APIError } from "~/lib/errors";
@@ -7,7 +7,7 @@ import { Errors, APIError } from "~/lib/errors";
 export const registerRoute = new Route({
   path: "/api/auth/register",
   method: "POST",
-  handler: withErrorHandler(async ({ request }) => {
+  handler: withErrorHandler(async ({ request }: { request: Request }) => {
     const { email, password } = await request.json();
 
     if (!email || !password) {
@@ -16,19 +16,25 @@ export const registerRoute = new Route({
       }));
     }
 
-    // TODO: 实现密码哈希
+    // TODO: Implement password hashing
     const passwordHash = "hashed_" + password;
 
     try {
-      const result = await db.query(
-        "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email",
-        [email, passwordHash]
-      );
+      const user = await db.user.create({
+        data: {
+          email,
+          passwordHash,
+        },
+        select: {
+          id: true,
+          email: true,
+        },
+      });
 
-      return jsonSuccess({ user: result.rows[0] });
+      return jsonSuccess({ user });
     } catch (error: any) {
-      // Check for unique constraint violation (PostgreSQL error code 23505)
-      if (error?.code === "23505") {
+      // Check for unique constraint violation (PostgreSQL error code P2002 in Prisma)
+      if (error?.code === "P2002") {
         return jsonError(new APIError(
           "USER_ALREADY_EXISTS",
           "User already exists",
