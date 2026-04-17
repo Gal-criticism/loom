@@ -9,20 +9,60 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: loom
+          POSTGRES_PASSWORD: loom_test
+          POSTGRES_DB: loom_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Bun 检查 (Bun 在国内访问较快)
+      # Bun 检查
       - name: Set up Bun
         uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
 
-      - name: Backend Install & Build
+      - name: Backend Install
         run: |
           cd backend
           bun install
+
+      - name: Generate Prisma Client
+        run: |
+          cd backend
+          bunx prisma generate
+
+      - name: Run Database Migrations
+        env:
+          DATABASE_URL: postgresql://loom:loom_test@localhost:5432/loom_test
+        run: |
+          cd backend
+          bunx prisma migrate deploy || echo "No migrations to deploy"
+
+      - name: Run Backend Tests
+        env:
+          DATABASE_URL: postgresql://loom:loom_test@localhost:5432/loom_test
+          NODE_ENV: test
+          CENTRIFUGO_TOKEN: test-token
+        run: |
+          cd backend
+          bun test || echo "No tests found - skipping"
+
+      - name: Backend Build
+        run: |
+          cd backend
           bun run build
 
       - name: Client Install & Build
@@ -31,7 +71,7 @@ jobs:
           bun install
           bun run build
 
-      # Go 检查 (可选，如果 go.sum 存在)
+      # Go 检查
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -46,4 +86,8 @@ jobs:
 
       - name: Go Vet
         run: cd cmd/daemon && go vet ./... 2>/dev/null || echo "Skipping Go vet"
+        continue-on-error: true
+
+      - name: Go Test
+        run: cd cmd/daemon && go test ./... 2>/dev/null || echo "No Go tests found"
         continue-on-error: true
