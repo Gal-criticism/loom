@@ -1,17 +1,17 @@
 package cmd
 
 import (
-    "fmt"
+	"fmt"
 
-    "github.com/spf13/cobra"
+	"github.com/spf13/cobra"
 )
 
 var VersionCmd = &cobra.Command{
-    Use:   "version",
-    Short: "Show version",
-    Run:   runVersion,
+	Use:   "version",
+	Short: "Show version",
+	Run:   runVersion,
 }
 
 func runVersion(cmd *cobra.Command, args []string) {
-    fmt.Println("Loom Daemon v0.1.0")
+	fmt.Println("Loom Daemon v0.1.0")
 }

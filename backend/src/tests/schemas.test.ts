@@ -118,11 +118,11 @@ describe("Schema Validation", () => {
       }
     });
 
-    it("should cap limit at 100", () => {
+    it("should reject limit exceeding 100", () => {
       const input = { limit: 200 };
 
       const result = paginationSchema.safeParse(input);
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
       if (result.success) {
         expect(result.data.limit).toBe(100);
       }

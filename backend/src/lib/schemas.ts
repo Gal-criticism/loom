@@ -56,9 +56,13 @@ export const createMessageSchema = z.object({
 
 export type CreateMessageInput = z.infer<typeof createMessageSchema>;
 
-// Pagination schema
+// Pagination schema - validates then transforms to cap values
+const limitSchema = z.coerce.number().int().min(1).max(100, {
+  message: "Limit must be at most 100"
+}).default(50);
+
 export const paginationSchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: limitSchema,
   offset: z.coerce.number().int().min(0).default(0),
 });
 
